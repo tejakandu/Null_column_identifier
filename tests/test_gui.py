@@ -10,7 +10,6 @@ from PySide6.QtCore import QSettings, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from nci.core import TableTarget  # noqa: E402
-from nci.gui.dialogs import BrowseDialog  # noqa: E402
 from nci.gui.main_window import MainWindow  # noqa: E402
 from nci.gui.style import STYLESHEET  # noqa: E402
 from tests.fakes import FakeCatalogClient  # noqa: E402
@@ -62,7 +61,6 @@ def test_scan_end_to_end(app, window, tmp_path):
     out = window._last_outcome
     assert os.path.exists(out.report_path)
     assert os.path.exists(out.log_path)
-    assert os.path.exists(out.pdf_path)
     states = [r.state for r in window.model.rows]
     assert states == ["nulls", "ok", "nulls", "error"]
     assert window.results_tree.topLevelItemCount() == 4
@@ -113,13 +111,17 @@ def test_edit_cell(app, window):
     assert window.model.targets() == [TableTarget("p", "d", "t2")]
 
 
-def test_browse_dialog_whole_dataset(app):
-    client = FakeCatalogClient(TABLES)
-    dlg = BrowseDialog(lambda project: client, project="proj")
-    assert wait_until(app, lambda: dlg.tree.topLevelItemCount() == 2)
-    sales = dlg.tree.topLevelItem(1)
-    assert sales.text(0) == "sales"
-    sales.setCheckState(0, Qt.Checked)  # not expanded yet -> loaded on accept
-    dlg._accept()
-    assert wait_until(app, lambda: dlg.result() == 1)
-    assert sorted(t.ref for t in dlg.targets) == ["proj.sales.clean", "proj.sales.orders"]
+def test_parallel_progress_and_filter(app, window):
+    targets = [TableTarget("proj", "sales", f"t{i}") for i in range(12)]
+    window.pool = type(window.pool)(lambda p, k: FakeCatalogClient(
+        {t.ref: (SCHEMA, ROWS) for t in targets}))
+    window._add_targets(targets)
+    window.list_filter.setText("t1")  # t1, t10, t11
+    assert window.proxy.rowCount() == 3
+    assert window.run_btn.text() == "Run scan (3)"
+    window.parallel_combo.setCurrentIndex(window.parallel_combo.findData(4))
+    window.run_scan()
+    assert wait_until(app, lambda: window._last_outcome is not None and window.thread is None)
+    assert len(window._last_outcome.results) == 3
+    assert window.progress.value() == 1000
+    assert sum(r.state == "nulls" for r in window.model.rows) == 3

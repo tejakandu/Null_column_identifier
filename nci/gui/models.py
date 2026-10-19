@@ -194,9 +194,8 @@ class TargetView(QTableView):
         for col, width in ((COL_PROJECT, 150), (COL_DATASET, 140), (COL_KEY, 110),
                            (COL_STATUS, 150), (COL_NULLS, 100), (COL_COVERAGE, 80)):
             self.setColumnWidth(col, width)
-        model.modelReset.connect(self.viewport().update)
-        model.rowsInserted.connect(self.viewport().update)
-        model.rowsRemoved.connect(self.viewport().update)
+        for sig in (model.modelReset, model.rowsInserted, model.rowsRemoved, model.layoutChanged):
+            sig.connect(self.viewport().update)
 
     # -- drag & drop ------------------------------------------------------------
 
@@ -245,7 +244,11 @@ class TargetView(QTableView):
         p = QPainter(self.viewport())
         p.setRenderHint(QPainter.Antialiasing)
         rect = self.viewport().rect().adjusted(24, 24, -24, -24)
-        if self._drag_active:
+        source = getattr(model, "sourceModel", lambda: None)()
+        if not self._drag_active and source is not None and source.rowCount():
+            p.setPen(QColor(MUTED))
+            p.drawText(rect, Qt.AlignCenter, "No tables match the filter")
+        elif self._drag_active:
             p.setPen(QColor("#1F6FEB"))
             p.setBrush(QColor(31, 111, 235, 18))
             p.drawRoundedRect(rect, 10, 10)

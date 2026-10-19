@@ -213,19 +213,24 @@ def make_client(project: str, key_file: str = ""):
 
 
 class ClientPool:
-    """Caches one client per (project, key file)."""
+    """Caches clients per (project, key file), one set per thread.
+
+    Scans and catalog listings run on several threads at once; giving each
+    thread its own client avoids sharing one HTTP session between threads.
+    """
 
     def __init__(self, factory: Callable[[str, str], object] = make_client):
         self._factory = factory
-        self._clients: dict[tuple[str, str], object] = {}
-        self._lock = threading.Lock()
+        self._local = threading.local()
 
     def get(self, project: str, key_file: str = ""):
+        clients = getattr(self._local, "clients", None)
+        if clients is None:
+            clients = self._local.clients = {}
         key = (project, key_file)
-        with self._lock:
-            if key not in self._clients:
-                self._clients[key] = self._factory(project, key_file)
-            return self._clients[key]
+        if key not in clients:
+            clients[key] = self._factory(project, key_file)
+        return clients[key]
 
 
 def friendly_error(exc: BaseException) -> str:
@@ -319,21 +324,6 @@ class Scanner:
         finally:
             result.finished = datetime.now()
         return result
-
-    def estimate_bytes(self, target: TableTarget) -> int:
-        """Bytes a scan would read, via BigQuery dry runs (free)."""
-        from google.cloud import bigquery
-
-        client = self.client_for(target)
-        table = client.get_table(target.ref)
-        specs = flatten_schema(table.schema)
-        total = 0
-        for start in range(0, len(specs), self.batch_size):
-            batch = specs[start:start + self.batch_size]
-            cfg = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
-            job = client.query(build_query(target, batch), job_config=cfg)
-            total += job.total_bytes_processed or 0
-        return total
 
     def cancel(self) -> None:
         self.cancel_event.set()

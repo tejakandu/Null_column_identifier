@@ -60,6 +60,9 @@ QTableView, QTreeWidget, QTreeView {{
     alternate-background-color: #FAFBFC; gridline-color: #EEF0F2;
     selection-background-color: #DCEAFE; selection-color: #0B2545;
 }}
+QTreeView::item, QListView::item {{ padding: 4px 4px; }}
+QTreeView::item:hover, QListView::item:hover {{ background: #F1F5FD; }}
+QTreeView::item:selected, QListView::item:selected {{ background: #DCEAFE; color: #0B2545; }}
 QHeaderView::section {{
     background: #F6F8FA; border: none; border-bottom: 1px solid #E1E4E8;
     border-right: 1px solid #EEF0F2; padding: 6px; font-weight: 600; color: #374151;

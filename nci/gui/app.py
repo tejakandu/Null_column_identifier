@@ -10,12 +10,27 @@ from .style import STYLESHEET, app_font, app_icon
 
 
 def selftest() -> int:
-    """Check the libraries a scan needs are importable (used to verify builds)."""
-    import fpdf  # noqa: F401
-    import openpyxl  # noqa: F401
-    from google.cloud import bigquery  # noqa: F401
+    """Exercise what a scan needs, without network (used to verify builds)."""
+    import tempfile
+
+    import google.auth.transport.requests  # noqa: F401
+    from google.auth.credentials import AnonymousCredentials
+    from google.cloud import bigquery
     from google.oauth2 import service_account  # noqa: F401
 
+    from ..core import ColumnResult, ColumnSpec, TableResult, TableTarget, build_query
+    from ..inputs import load_targets, save_targets
+    from ..report import RunInfo, write_report
+
+    bigquery.Client(project="selftest", credentials=AnonymousCredentials())
+    bigquery.QueryJobConfig(maximum_bytes_billed=1, labels={"app": "selftest"})
+    target = TableTarget("p", "d", "t")
+    spec = ColumnSpec("c", "STRING", "NULLABLE", "t.`c` IS NOT NULL")
+    build_query(target, [spec])
+    with tempfile.TemporaryDirectory() as tmp:
+        write_report(f"{tmp}/r.xlsx", [TableResult(target, "ok", 1, [ColumnResult(spec, 0)])], RunInfo())
+        save_targets(f"{tmp}/l.xlsx", [target])
+        assert load_targets(f"{tmp}/l.xlsx")[0] == [target]
     print(f"{APP_NAME} {__version__}: OK (bigquery {bigquery.__version__})")
     return 0
 

@@ -1,11 +1,11 @@
 from datetime import datetime
 
-import pandas as pd
+from openpyxl import Workbook
 from openpyxl import load_workbook
 
 from nci.core import Scanner, TableTarget
 from nci.inputs import load_targets, save_targets
-from nci.report import RunInfo, write_log_pdf, write_report
+from nci.report import RunInfo, write_report
 from tests.fakes import FakeClient
 from tests.test_core import ROWS, SCHEMA
 
@@ -49,23 +49,19 @@ def test_report_sheets_and_content(tmp_path):
     assert len(nulls) == 1 + 5 + 5
 
 
-def test_log_pdf(tmp_path):
-    out = write_log_pdf("line 1\nunicode → ok\n", str(tmp_path / "l.pdf"))
-    assert open(out, "rb").read(4) == b"%PDF"
-
-
 def test_load_original_layout(tmp_path):
     key = tmp_path / "key.json"
     key.write_text("{}")
     path = tmp_path / "Table_name_credentials.xlsx"
-    with pd.ExcelWriter(path) as w:
-        pd.DataFrame({"x": [1]}).to_excel(w, sheet_name="Tablenames", index=False)
-        pd.DataFrame({
-            "CredentialsAccountJson": ["key.json", "key.json", None],
-            "Project_id": ["p1", "p1", "p2"],
-            "Dataset_id": ["d1", "d1", "d2"],
-            "table_id": ["t1", "t2", None],
-        }).to_excel(w, sheet_name="Credentials", index=False)
+    wb = Workbook()
+    wb.active.title = "Tablenames"
+    wb.active.append(["x"])
+    ws = wb.create_sheet("Credentials")
+    ws.append(["CredentialsAccountJson", "Project_id", "Dataset_id", "table_id"])
+    ws.append(["key.json", "p1", "d1", "t1"])
+    ws.append(["key.json", "p1", "d1", "t2"])
+    ws.append([None, "p2", "d2", None])
+    wb.save(path)
     targets, warnings = load_targets(str(path))
     assert [t.ref for t in targets] == ["p1.d1.t1", "p1.d1.t2"]
     assert targets[0].key_file == str(key)

@@ -6,7 +6,7 @@ import json
 import os
 import time
 
-from PySide6.QtCore import QSettings, Qt, QThread, QThreadPool, QTimer, QUrl
+from PySide6.QtCore import QSettings, QSortFilterProxyModel, QStandardPaths, Qt, QThread, QTimer, QUrl
 from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QFontDatabase, QGuiApplication,
                            QKeySequence, QShortcut)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox,
@@ -16,10 +16,11 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QC
                                QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from .. import APP_NAME, __version__
-from ..core import (ClientPool, Scanner, TableResult, TableTarget, format_bytes, format_duration,
-                    friendly_error, make_client)
+from ..catalog import Catalog
+from ..core import ClientPool, TableResult, TableTarget, format_duration, make_client
 from ..inputs import load_targets, save_targets
-from .dialogs import AddTablesDialog, BrowseDialog
+from .browse import BrowseDialog
+from .dialogs import AddTablesDialog
 from .models import TargetModel, TargetView
 from .style import DANGER, MUTED, SUCCESS, WARNING, app_icon
 from .workers import RunOutcome, RunSettings, ScanWorker, Task
@@ -38,8 +39,11 @@ set on a table row overrides this.</li>
 <p><b>How "null" is decided:</b> a column is null when not a single row has a value. Arrays count as
 empty when they have no elements. A field inside a repeated record is null when no element in any
 row has a value.</p>
-<p><b>Cost:</b> a scan reads every column once, like <code>SELECT *</code>. Use <i>Estimate size</i>
-first, and set a safety limit to skip tables that are too big.</p>
+<p><b>Cost:</b> a scan reads every column once, like <code>SELECT *</code>. Set a safety limit to
+skip tables that are too big.</p>
+<p><b>Browse:</b> search covers every dataset of the project (listings are cached; ↻ refreshes).
+Use several words or <code>*</code> wildcards, e.g. <code>sales *_2024</code>. Ticked tables from
+several projects collect on the right.</p>
 <p>Shortcuts: <b>Ctrl+V</b> pastes table names, <b>Delete</b> removes rows, <b>F5</b> runs.</p>"""
 
 
@@ -72,6 +76,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(980, 640)
 
         self.pool = ClientPool(client_factory)
+        self._catalog: Catalog | None = None
+        self._catalog_identity = ""
         self.settings = settings or QSettings("NullColumnIdentifier", "NullColumnIdentifier")
         self.model = TargetModel(self)
         self.thread: QThread | None = None
@@ -149,9 +155,15 @@ class MainWindow(QMainWindow):
         title = QLabel("1  Tables to scan")
         title.setObjectName("sectionTitle")
         self.count_label = _hint("")
+        self.list_filter = QLineEdit()
+        self.list_filter.setPlaceholderText("Filter this list…")
+        self.list_filter.setClearButtonEnabled(True)
+        self.list_filter.setFixedWidth(220)
         head.addWidget(title)
         head.addStretch(1)
         head.addWidget(self.count_label)
+        head.addSpacing(8)
+        head.addWidget(self.list_filter)
         layout.addLayout(head)
 
         bar = QHBoxLayout()
@@ -173,8 +185,12 @@ class MainWindow(QMainWindow):
         bar.addWidget(self.clear_btn)
         layout.addLayout(bar)
 
+        self.proxy = QSortFilterProxyModel(self)
+        self.proxy.setSourceModel(self.model)
+        self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
+        self.proxy.setFilterKeyColumn(-1)
         self.view = TargetView()
-        self.view.setModel(self.model)
+        self.view.setModel(self.proxy)
         layout.addWidget(self.view, 1)
         layout.addWidget(_hint("Double-click a cell to edit it. Right-click rows to set a key file for them."))
 
@@ -184,6 +200,7 @@ class MainWindow(QMainWindow):
         self.save_list_btn.clicked.connect(self.save_list)
         self.remove_btn.clicked.connect(self.remove_selected)
         self.clear_btn.clicked.connect(self.clear_tables)
+        self.list_filter.textChanged.connect(self._filter_list)
         self.view.filesDropped.connect(self.import_lists)
         self.view.customContextMenuRequested.connect(self._table_menu)
         self.view.selectionModel().selectionChanged.connect(lambda *_: self._update_counts())
@@ -241,10 +258,16 @@ class MainWindow(QMainWindow):
         self.limit_spin.setToolTip("Tables that would scan more than this are skipped, so nothing is billed "
                                    "for them.")
         grid.addWidget(self.limit_spin, 0, 1)
+        grid.addWidget(QLabel("Tables at the same time"), 1, 0)
+        self.parallel_combo = QComboBox()
+        for n in (1, 2, 4, 6, 8):
+            self.parallel_combo.addItem(str(n), n)
+        self.parallel_combo.setToolTip("How many tables are scanned in parallel. More is faster; "
+                                       "BigQuery runs each table as its own query.")
+        grid.addWidget(self.parallel_combo, 1, 1)
+        grid.setColumnStretch(1, 1)
         layout.addLayout(grid)
-        self.pdf_check = QCheckBox("Also save the log as PDF")
         self.open_check = QCheckBox("Open the report when finished")
-        layout.addWidget(self.pdf_check)
         layout.addWidget(self.open_check)
         layout.addStretch(1)
 
@@ -339,21 +362,17 @@ class MainWindow(QMainWindow):
         row.addWidget(self.report_btn)
         row.addWidget(self.folder_btn)
         row.addSpacing(12)
-        self.estimate_btn = QPushButton("Estimate size")
-        self.estimate_btn.setToolTip("Ask BigQuery how much data the scan would read (free, nothing runs)")
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setObjectName("danger")
         self.run_btn = QPushButton("Run scan")
         self.run_btn.setObjectName("primary")
         self.run_btn.setToolTip("Scan the selected tables, or all tables if none are selected (F5)")
-        row.addWidget(self.estimate_btn)
         row.addWidget(self.cancel_btn)
         row.addWidget(self.run_btn)
         layout.addLayout(row)
 
         self.report_btn.clicked.connect(self._open_report)
         self.folder_btn.clicked.connect(self._open_report_folder)
-        self.estimate_btn.clicked.connect(self.estimate)
         self.cancel_btn.clicked.connect(self.cancel_scan)
         self.run_btn.clicked.connect(self.run_scan)
         return card
@@ -369,7 +388,8 @@ class MainWindow(QMainWindow):
         default_out = os.path.join(os.path.expanduser("~"), "Documents", "Null Column Reports")
         self.out_edit.setText(s.value("output_dir", default_out, type=str) or default_out)
         self.limit_spin.setValue(s.value("max_gb", 0.0, type=float))
-        self.pdf_check.setChecked(s.value("save_pdf", True, type=bool))
+        idx = self.parallel_combo.findData(s.value("parallel", 4, type=int))
+        self.parallel_combo.setCurrentIndex(idx if idx >= 0 else 2)
         self.open_check.setChecked(s.value("open_when_done", True, type=bool))
         try:
             rows = json.loads(s.value("tables", "[]", type=str) or "[]")
@@ -388,7 +408,7 @@ class MainWindow(QMainWindow):
         s.setValue("billing_project", self.billing_edit.text().strip())
         s.setValue("output_dir", self.out_edit.text().strip())
         s.setValue("max_gb", self.limit_spin.value())
-        s.setValue("save_pdf", self.pdf_check.isChecked())
+        s.setValue("parallel", self.parallel_combo.currentData())
         s.setValue("open_when_done", self.open_check.isChecked())
         s.setValue("geometry", self.saveGeometry())
         self._save_tables()
@@ -406,7 +426,7 @@ class MainWindow(QMainWindow):
             billing_project=self.billing_edit.text().strip(),
             output_dir=self._output_dir(),
             max_gb_per_query=self.limit_spin.value(),
-            save_pdf=self.pdf_check.isChecked(),
+            parallel=int(self.parallel_combo.currentData()),
             open_when_done=self.open_check.isChecked(),
         )
 
@@ -425,17 +445,22 @@ class MainWindow(QMainWindow):
         settings = self._run_settings()
         if not self._check_credentials(settings, need_rows=False):
             return
-
-        def client_for_project(project):
-            key = settings.key_file if settings.use_key_file else ""
-            return self.pool.get(settings.billing_project or project, key)
+        identity = settings.key_for() or "google-login"
+        if self._catalog is None or self._catalog_identity != identity:
+            cache = QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)
+            self._catalog = Catalog(settings.client_for_project(self.pool),
+                                    os.path.join(cache, "catalog_cache"), identity)
+            self._catalog_identity = identity
 
         targets = self.model.targets()
-        recent = list(dict.fromkeys(t.project for t in targets))
-        start = self.settings.value("last_browse_project", "", type=str) or (recent[0] if recent else "")
-        dialog = BrowseDialog(client_for_project, self, project=start, recent_projects=recent)
-        if dialog.exec() and dialog.targets:
-            self.settings.setValue("last_browse_project", dialog.targets[0].project)
+        recent = json.loads(self.settings.value("recent_projects", "[]", type=str) or "[]")
+        recent = list(dict.fromkeys(recent + [t.project for t in reversed(targets)]))[:8]
+        start = recent[0] if recent else ""
+        dialog = BrowseDialog(self._catalog, self, recent_projects=recent, existing=targets,
+                              start_project=start)
+        dialog.exec()
+        self.settings.setValue("recent_projects", json.dumps(dialog.recent[:8]))
+        if dialog.result() and dialog.targets:
             self._add_targets(dialog.targets)
 
     def add_tables(self, text: str = ""):
@@ -508,7 +533,16 @@ class MainWindow(QMainWindow):
             self.model.clear()
 
     def _selected_rows(self) -> list[int]:
-        return sorted({i.row() for i in self.view.selectionModel().selectedRows()})
+        rows = self.view.selectionModel().selectedRows()
+        return sorted({self.proxy.mapToSource(i).row() for i in rows})
+
+    def _visible_rows(self) -> list[int]:
+        return sorted(self.proxy.mapToSource(self.proxy.index(r, 0)).row()
+                      for r in range(self.proxy.rowCount()))
+
+    def _filter_list(self, text: str):
+        self.proxy.setFilterFixedString(text.strip())
+        self._update_counts()
 
     def _table_menu(self, pos):
         if self._busy():
@@ -538,21 +572,25 @@ class MainWindow(QMainWindow):
     def _update_counts(self):
         n = self.model.rowCount()
         sel = len(self._selected_rows())
-        text = f"{n} table(s)" if n else ""
+        shown = self.proxy.rowCount()
+        text = f"{n:,} table(s)" if n else ""
+        if shown != n:
+            text += f" · {shown:,} shown"
         if sel and sel != n:
-            text += f" · {sel} selected"
+            text += f" · {sel:,} selected"
         self.count_label.setText(text)
-        self.run_btn.setText(f"Run scan ({sel})" if sel and sel != n else "Run scan")
+        to_run = sel or shown
+        self.run_btn.setText(f"Run scan ({to_run:,})" if to_run != n else "Run scan")
         if not self._busy():
-            has = n > 0
-            for b in (self.run_btn, self.estimate_btn, self.clear_btn, self.save_list_btn):
-                b.setEnabled(has)
+            for b in (self.clear_btn, self.save_list_btn):
+                b.setEnabled(n > 0)
+            self.run_btn.setEnabled(to_run > 0)
             self.remove_btn.setEnabled(sel > 0)
 
     # ================================================================ run
 
     def _rows_to_run(self) -> list[int]:
-        return self._selected_rows() or list(range(self.model.rowCount()))
+        return self._selected_rows() or self._visible_rows()
 
     def _check_credentials(self, settings: RunSettings, need_rows=True) -> bool:
         if need_rows and not self.model.rowCount():
@@ -609,6 +647,7 @@ class MainWindow(QMainWindow):
         self.thread.finished.connect(self._thread_cleanup)
 
         self._run_started = time.monotonic()
+        self._fractions = [0.0] * len(rows)
         self._done_tables = 0
         self._set_busy(True)
         self._set_status(f"Starting scan of {len(targets)} table(s)…")
@@ -630,17 +669,26 @@ class MainWindow(QMainWindow):
 
     def _on_table_started(self, i):
         row = self._run_rows[i]
-        target = self.model.rows[row].target
         self.model.set_state(row, "running", "Scanning…")
-        self.view.scrollTo(self.model.index(row, 0))
-        self._set_status(f"Scanning {i + 1} of {len(self._run_rows)}: {target.ref}")
+        self.view.scrollTo(self.proxy.mapFromSource(self.model.index(row, 0)))
+        self._update_run_status()
 
     def _on_table_progress(self, i, done, total):
         row = self._run_rows[i]
         if total:
             self.model.set_state(row, "running", f"Scanning… {done * 100 // total}%")
-            frac = (i + done / total) / len(self._run_rows)
-            self.progress.setValue(int(frac * 1000))
+            # Leave room for the final step; a table counts fully once it is done.
+            self._fractions[i] = 0.95 * done / total
+            self._update_progress()
+
+    def _update_progress(self):
+        self.progress.setValue(int(sum(self._fractions) / max(1, len(self._fractions)) * 1000))
+
+    def _update_run_status(self):
+        running = sum(1 for r in self._run_rows if self.model.rows[r].state == "running")
+        total = len(self._run_rows)
+        self._set_status(f"Scanning… {self._done_tables:,} of {total:,} done"
+                         + (f" · {running} running" if running else ""))
 
     def _on_table_done(self, i, res: TableResult):
         row = self._run_rows[i]
@@ -655,7 +703,11 @@ class MainWindow(QMainWindow):
         else:
             state, text = "error", "Failed – hover for details"
         self.model.set_state(row, state, text, res)
-        self.progress.setValue(int((i + 1) / len(self._run_rows) * 1000))
+        self._fractions[i] = 1.0
+        self._done_tables += 1
+        self._update_progress()
+        if self._busy() and not self.worker.cancel_event.is_set():
+            self._update_run_status()
         self._add_result_item(res)
 
     def _on_finished(self, outcome: RunOutcome):
@@ -684,67 +736,6 @@ class MainWindow(QMainWindow):
         if outcome.report_path and self._run_settings().open_when_done and not outcome.cancelled:
             self._open_path(outcome.report_path)
         QApplication.alert(self, 0)  # flash the taskbar when a long scan ends
-
-    # ================================================================ estimate
-
-    def estimate(self):
-        if self._busy() or not self.model.rowCount():
-            return
-        settings = self._run_settings()
-        if not self._check_credentials(settings):
-            return
-        rows = self._rows_to_run()
-        targets = [self.model.rows[r].target for r in rows]
-        scanner = Scanner(settings.client_for(self.pool))
-
-        def work():
-            out = []
-            for t in targets:
-                try:
-                    out.append((scanner.estimate_bytes(t), ""))
-                except Exception as exc:  # noqa: BLE001
-                    out.append((None, friendly_error(exc)))
-            return out
-
-        def done(values):
-            self._tasks.discard(task)
-            self._set_busy(False)
-            total = 0
-            errors = 0
-            limit = settings.max_gb_per_query * 1024 ** 3
-            for r, (size, err) in zip(rows, values):
-                if size is None:
-                    errors += 1
-                    self.model.set_state(r, "error", "Estimate failed – hover")
-                    self.model.rows[r].result = TableResult(self.model.rows[r].target, status="error", error=err)
-                else:
-                    total += size
-                    over = limit and size > limit
-                    self.model.set_state(r, "nulls" if over else "ready",
-                                         f"≈ {format_bytes(size)}" + (" (over limit)" if over else ""))
-            cost = total / 1024 ** 4 * 6.25
-            msg = (f"The scan would read about {format_bytes(total)} across {len(rows) - errors} table(s).\n\n"
-                   f"At BigQuery's on-demand list price (about $6.25 per TiB) that is roughly ${cost:,.2f}. "
-                   "Your organisation's pricing may differ (flat-rate/editions plans are not billed per byte).")
-            if errors:
-                msg += f"\n\n{errors} table(s) could not be estimated; hover their status for details."
-            self._set_status(f"Estimated scan size: {format_bytes(total)}")
-            QMessageBox.information(self, "Estimated size", msg)
-
-        def failed(msg):
-            self._tasks.discard(task)
-            self._set_busy(False)
-            QMessageBox.warning(self, "Estimate", msg)
-
-        task = Task(work)
-        self._tasks.add(task)
-        task.signals.done.connect(done)
-        task.signals.failed.connect(failed)
-        self._set_busy(True, estimating=True)
-        self._set_status(f"Estimating size of {len(targets)} table(s)…")
-        for r in rows:
-            self.model.set_state(r, "running", "Estimating…")
-        QThreadPool.globalInstance().start(task)
 
     # ================================================================ results
 
@@ -786,25 +777,29 @@ class MainWindow(QMainWindow):
             child.setToolTip(5, col.error)
             item.addChild(child)
         self.results_tree.addTopLevelItem(item)
-        if res.null_columns and len(res.null_columns) <= 25:
+        if res.null_columns and len(res.null_columns) <= 25 and self.results_tree.topLevelItemCount() <= 50:
             item.setExpanded(True)
-        self._filter_results()
+        self._filter_item(item)
 
     def _filter_results(self, *_):
-        text = self.result_filter.text().strip().lower()
-        only = self.only_nulls.isChecked()
+        self.results_tree.setUpdatesEnabled(False)
         for i in range(self.results_tree.topLevelItemCount()):
-            item = self.results_tree.topLevelItem(i)
-            res: TableResult = item.data(0, Qt.UserRole)
-            table_match = text in item.text(0).lower()
-            child_match = False
-            for j in range(item.childCount()):
-                child = item.child(j)
-                show = not text or table_match or text in child.text(0).lower()
-                child.setHidden(not show)
-                child_match |= show
-            hidden = (only and not res.null_columns) or (bool(text) and not table_match and not child_match)
-            item.setHidden(hidden)
+            self._filter_item(self.results_tree.topLevelItem(i))
+        self.results_tree.setUpdatesEnabled(True)
+
+    def _filter_item(self, item: QTreeWidgetItem):
+        text = self.result_filter.text().strip().lower()
+        res: TableResult = item.data(0, Qt.UserRole)
+        table_match = text in item.text(0).lower()
+        child_match = False
+        for j in range(item.childCount()):
+            child = item.child(j)
+            show = not text or table_match or text in child.text(0).lower()
+            child.setHidden(not show)
+            child_match = child_match or show
+        hidden = (self.only_nulls.isChecked() and not res.null_columns) or \
+            (bool(text) and not table_match and not child_match)
+        item.setHidden(hidden)
 
     def _copy_null_columns(self):
         items = [i if i.parent() is None else i.parent() for i in self.results_tree.selectedItems()]
@@ -825,16 +820,16 @@ class MainWindow(QMainWindow):
     def _busy(self) -> bool:
         return getattr(self, "_is_busy", False)
 
-    def _set_busy(self, busy: bool, estimating: bool = False):
+    def _set_busy(self, busy: bool):
         self._is_busy = busy
         self.model.locked = busy
         for w in (self.browse_btn, self.add_btn, self.import_btn, self.save_list_btn, self.remove_btn,
-                  self.clear_btn, self.estimate_btn, self.run_btn, self.adc_radio, self.key_radio,
-                  self.billing_edit, self.out_edit, self.out_browse, self.limit_spin, self.pdf_check,
+                  self.clear_btn, self.run_btn, self.adc_radio, self.key_radio,
+                  self.billing_edit, self.out_edit, self.out_browse, self.limit_spin, self.parallel_combo,
                   self.open_check):
             w.setEnabled(not busy)
-        self.cancel_btn.setEnabled(busy and not estimating)
-        self.cancel_btn.setVisible(busy and not estimating)
+        self.cancel_btn.setEnabled(busy)
+        self.cancel_btn.setVisible(busy)
         self.view.setAcceptDrops(not busy)
         self._sync_auth_widgets()
         if not busy:

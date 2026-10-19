@@ -228,21 +228,3 @@ def _unique_sheet_name(base: str, used: set[str]) -> str:
         i += 1
     used.add(candidate.lower())
     return candidate
-
-
-# --------------------------------------------------------------------------- log
-
-
-def write_log_pdf(text: str, path: str) -> str:
-    """Save the run log as a PDF (requires the optional 'fpdf2' package)."""
-    from fpdf import FPDF
-
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-    pdf.set_font("Courier", size=8)
-    for line in text.splitlines() or [""]:
-        safe = line.encode("latin-1", "replace").decode("latin-1")
-        pdf.multi_cell(0, 4, safe or " ", new_x="LMARGIN", new_y="NEXT")
-    pdf.output(path)
-    return path

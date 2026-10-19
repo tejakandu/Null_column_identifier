@@ -1,6 +1,4 @@
 google-cloud-bigquery>=3.20
-pandas>=2.0
 openpyxl>=3.1
 PySide6-Essentials>=6.6
-fpdf2>=2.7          # optional: PDF copy of the log
 pywin32>=306; sys_platform == "win32"   # optional: shows the user's full name in the report
