@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+build/
+dist/
+*.log
+NullColumns_*.xlsx
+*_log.pdf
+# never commit credentials
+*.json
+!.vscode/*.json
