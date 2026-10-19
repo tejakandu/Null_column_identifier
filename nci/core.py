@@ -19,6 +19,8 @@ field is isolated, so one odd column never sinks the whole table.
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -199,17 +201,101 @@ class TableResult:
 # --------------------------------------------------------------------------- clients
 
 
-def make_client(project: str, key_file: str = ""):
-    """BigQuery client from a service-account key file, or the Google login."""
-    from google.cloud import bigquery
+CLOUD_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+# Listing projects needs a client but no real project; queries always pass one.
+PLACEHOLDER_PROJECT = "null-column-identifier"
+
+_creds_lock = threading.Lock()
+_creds_cache: dict[str, tuple[object, str]] = {}
+
+
+def adc_path() -> str:
+    """Where `gcloud auth application-default login` saves the Google login."""
+    explicit = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if explicit:
+        return explicit
+    config = os.environ.get("CLOUDSDK_CONFIG")
+    if not config:
+        if os.name == "nt":
+            config = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "gcloud")
+        else:
+            config = os.path.join(os.path.expanduser("~"), ".config", "gcloud")
+    return os.path.join(config, "application_default_credentials.json")
+
+
+def credentials_for(key_file: str = "") -> tuple[object, str]:
+    """(credentials, default project), loaded once per key file and shared.
+
+    The Google login is read straight from its file. Letting google-auth find
+    it would run `gcloud config get project` for every client, and on Windows
+    each of those opens a console window.
+    """
+    with _creds_lock:
+        if key_file not in _creds_cache:
+            _creds_cache[key_file] = _load_credentials(key_file)
+        return _creds_cache[key_file]
+
+
+def _load_credentials(key_file: str) -> tuple[object, str]:
+    import google.auth
 
     if key_file:
         from google.oauth2 import service_account
 
-        creds = service_account.Credentials.from_service_account_file(
-            key_file, scopes=["https://www.googleapis.com/auth/cloud-platform"])
-        return bigquery.Client(project=project or creds.project_id, credentials=creds)
-    return bigquery.Client(project=project or None)
+        creds = service_account.Credentials.from_service_account_file(key_file, scopes=[CLOUD_SCOPE])
+        return creds, creds.project_id or ""
+    path = adc_path()
+    kind = ""
+    if os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                kind = json.load(fh).get("type", "")
+        except (OSError, ValueError):
+            kind = ""
+    if kind == "authorized_user":  # the usual `gcloud auth application-default login`
+        from google.oauth2.credentials import Credentials
+
+        creds = Credentials.from_authorized_user_file(path, scopes=[CLOUD_SCOPE])
+        return creds, creds.quota_project_id or ""
+    if kind == "service_account":
+        from google.oauth2 import service_account
+
+        creds = service_account.Credentials.from_service_account_file(path, scopes=[CLOUD_SCOPE])
+        return creds, creds.project_id or ""
+    # Not signed in with gcloud, or an unusual sign-in type: let google-auth try
+    # its other sources. Raises DefaultCredentialsError if none work.
+    creds, project = google.auth.default(scopes=[CLOUD_SCOPE])
+    return creds, project or ""
+
+
+def make_client(project: str, key_file: str = ""):
+    """BigQuery client from a service-account key file, or the Google login."""
+    from google.cloud import bigquery
+
+    creds, default_project = credentials_for(key_file)
+    return bigquery.Client(project=project or default_project or PLACEHOLDER_PROJECT, credentials=creds)
+
+
+def hide_console_windows() -> None:
+    """On Windows, start any child process without a console window.
+
+    The app has no console, so a console program it starts (gcloud, used by
+    some Google sign-in types to refresh tokens) would flash a black window.
+    """
+    if os.name != "nt":
+        return
+    import subprocess
+
+    original = subprocess.Popen.__init__
+    if getattr(original, "_nci_hidden", False):
+        return
+
+    def init(self, *args, **kwargs):
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+        original(self, *args, **kwargs)
+
+    init._nci_hidden = True
+    subprocess.Popen.__init__ = init
 
 
 class ClientPool:

@@ -5,6 +5,7 @@ import sys
 from PySide6.QtWidgets import QApplication, QStyleFactory
 
 from .. import APP_NAME, __version__
+from ..core import hide_console_windows
 from .main_window import MainWindow
 from .style import STYLESHEET, app_font, app_icon
 
@@ -36,6 +37,7 @@ def selftest() -> int:
 
 
 def main() -> int:
+    hide_console_windows()
     if "--selftest" in sys.argv:
         return selftest()
     if sys.platform == "win32":
