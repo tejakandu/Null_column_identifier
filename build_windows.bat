@@ -1,5 +1,5 @@
 @echo off
-REM Builds dist\NullColumnIdentifier\NullColumnIdentifier.exe
+REM Builds dist\NullColumnIdentifier.exe (one self-contained file)
 REM Double-click it, or run it from a Command Prompt in this folder.
 setlocal EnableExtensions
 cd /d "%~dp0"
@@ -89,7 +89,7 @@ if errorlevel 1 (
 REM ---- 5. Check ----------------------------------------------------------------
 echo.
 echo [5/5] Checking the built app...
-dist\NullColumnIdentifier\NullColumnIdentifier.exe --selftest
+dist\NullColumnIdentifier.exe --selftest
 if errorlevel 1 (
     echo.
     echo  The app was built but its self-test failed.
@@ -98,9 +98,11 @@ if errorlevel 1 (
 
 echo.
 echo ============================================================
-echo  Done. The app is:
-echo    %CD%\dist\NullColumnIdentifier\NullColumnIdentifier.exe
-echo  To share it, zip the whole dist\NullColumnIdentifier folder.
+echo  Done. The app is one file you can share as is:
+echo    %CD%\dist\NullColumnIdentifier.exe
+echo.
+echo  To release it to everyone:
+echo    .venv\Scripts\python -m nci.admin publish --bucket gs://BUCKET/FOLDER --notes "What changed"
 echo ============================================================
 echo.
 pause

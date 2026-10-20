@@ -3,6 +3,8 @@
     python -m nci.admin setup   --dataset my-admin-project.null_column_identifier
     python -m nci.admin release 2.3.0 --url "https://…/NullColumnIdentifier-2.3.0.zip" \\
                                 --notes "Faster browse" --mandatory
+    python -m nci.admin publish --bucket gs://my-bucket/null-column-identifier \\
+                                --notes "Faster browse" --mandatory
     python -m nci.admin list
     python -m nci.admin withdraw 2.3.0
     python -m nci.admin sql     --dataset my-admin-project.null_column_identifier
@@ -18,6 +20,7 @@ import getpass
 import json
 import os
 import sys
+from urllib.parse import quote
 
 from . import __version__
 from .config import FILE_NAME, load_config
@@ -122,32 +125,95 @@ def _find_dataset(client, project: str, dataset_id: str):
 
 
 def cmd_release(args) -> int:
-    from google.cloud import bigquery
-
     table = _releases_table(args)
-    current = fetch_releases(_client(table.split(".")[0], args.key), table)
-    newest = max((r.key for r in current), default=(0,))
-    if parse_version(args.version) <= newest and not args.force:
-        print(f"Version {args.version} is not newer than the latest published version "
-              f"({'.'.join(map(str, newest))}). Use --force to publish anyway.", file=sys.stderr)
+    if not _is_newer(args, table):
         return 1
     url = args.url or load_config().download_url
     if not url:
         print("Give --url (where users download the new version).", file=sys.stderr)
         return 1
+    _insert_release(args, table, args.version, url)
+    return 0
+
+
+def cmd_publish(args) -> int:
+    """Upload the built .exe to Cloud Storage, then register the release."""
+    version = args.version or __version__
+    path = args.file
+    if not os.path.isfile(path):
+        print(f"{path} not found. Build the app first (build_windows.bat).", file=sys.stderr)
+        return 1
+    bucket_name, prefix = _split_gcs(args.bucket or load_config().release_bucket)
+    if not bucket_name:
+        print("Give --bucket gs://BUCKET/FOLDER (or set release_bucket in nci_config.json).",
+              file=sys.stderr)
+        return 1
+    table = _releases_table(args)
+    if not _is_newer(args, table, version):  # check before uploading anything
+        return 1
+
+    file_name = f"NullColumnIdentifier-{version}.exe"
+    object_name = f"{prefix}/{file_name}" if prefix else file_name
+    blob = _storage_client(bucket_name, args.key).bucket(bucket_name).blob(object_name)
+    # Content-Disposition makes browsers save it under this exact name
+    # (otherwise downloads can come out as "<bucket>_<folder>_<file>").
+    blob.content_disposition = f'attachment; filename="{file_name}"'
+    blob.cache_control = "no-cache"
+    size_mb = os.path.getsize(path) / 2 ** 20
+    print(f"Uploading {path} ({size_mb:.0f} MB) to gs://{bucket_name}/{object_name} ...")
+    blob.upload_from_filename(path, content_type="application/vnd.microsoft.portable-executable",
+                              timeout=600)
+    url = f"https://storage.cloud.google.com/{bucket_name}/{quote(object_name)}"
+    _insert_release(args, table, version, url)
+    print("\nUsers download it with their Google sign-in; they need Storage Object Viewer on the bucket.")
+    return 0
+
+
+def _is_newer(args, table: str, version: str = "") -> bool:
+    version = version or args.version
+    current = fetch_releases(_client(table.split(".")[0], args.key), table)
+    newest = max((r.key for r in current), default=(0,))
+    if parse_version(version) <= newest and not args.force:
+        print(f"Version {version} is not newer than the latest published version "
+              f"({'.'.join(map(str, newest))}). Bump __version__ in nci/__init__.py and rebuild, "
+              "or use --force to publish anyway.", file=sys.stderr)
+        return False
+    return True
+
+
+def _insert_release(args, table: str, version: str, url: str) -> None:
+    from google.cloud import bigquery
+
     client = _client(table.split(".")[0], args.key)
     # DML (not streaming) so the row is visible to the app immediately.
     sql = (f"INSERT INTO `{table}` (version, released_at, mandatory, download_url, release_notes, "
            f"released_by, withdrawn) VALUES (@v, CURRENT_TIMESTAMP(), @m, @u, @n, @by, FALSE)")
-    params = [bigquery.ScalarQueryParameter("v", "STRING", args.version),
+    params = [bigquery.ScalarQueryParameter("v", "STRING", version),
               bigquery.ScalarQueryParameter("m", "BOOL", args.mandatory),
               bigquery.ScalarQueryParameter("u", "STRING", url),
               bigquery.ScalarQueryParameter("n", "STRING", args.notes or ""),
               bigquery.ScalarQueryParameter("by", "STRING", args.by or getpass.getuser())]
     client.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
     kind = "MANDATORY - older versions will close" if args.mandatory else "optional"
-    print(f"Published {args.version} ({kind})\n  {url}")
-    return 0
+    print(f"Published {version} ({kind})\n  {url}")
+
+
+def _split_gcs(text: str) -> tuple[str, str]:
+    """'gs://bucket/a/b' -> ('bucket', 'a/b')."""
+    text = (text or "").strip()
+    if text.startswith("gs://"):
+        text = text[5:]
+    bucket, _, prefix = text.strip("/").partition("/")
+    return bucket, prefix.strip("/")
+
+
+def _storage_client(bucket: str, key: str):
+    from google.cloud import storage
+
+    from .core import credentials_for
+
+    creds, project = credentials_for(key)
+    return storage.Client(project=project or None, credentials=creds)
 
 
 def cmd_withdraw(args) -> int:
@@ -231,6 +297,18 @@ def main(argv=None) -> int:
     r.add_argument("--force", action="store_true", help="publish even if not newer than the latest")
     r.add_argument("--table", default="")
     r.set_defaults(fn=cmd_release)
+
+    pb = sub.add_parser("publish", help="upload the built .exe to Cloud Storage and publish it")
+    pb.add_argument("--bucket", default="", help="gs://BUCKET/FOLDER to upload to")
+    pb.add_argument("--file", default=os.path.join("dist", "NullColumnIdentifier.exe"),
+                    help="the built app (default dist\\NullColumnIdentifier.exe)")
+    pb.add_argument("--version", default="", help=f"version being published (default {__version__})")
+    pb.add_argument("--notes", default="", help="what changed (shown to users)")
+    pb.add_argument("--mandatory", action="store_true", help="force older versions to update and close")
+    pb.add_argument("--by", default="", help="your name (default: login name)")
+    pb.add_argument("--force", action="store_true", help="publish even if not newer than the latest")
+    pb.add_argument("--table", default="")
+    pb.set_defaults(fn=cmd_publish)
 
     w = sub.add_parser("withdraw", help="pull a published version")
     w.add_argument("version")

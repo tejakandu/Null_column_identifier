@@ -343,3 +343,79 @@ def test_admin_errors_are_one_readable_line(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert err.startswith("Error: Access denied") and "Traceback" not in err
     assert "BigQuery Data Editor" in err
+
+
+class FakeStorage:
+    def __init__(self):
+        self.uploads = []
+
+    def bucket(self, name):
+        storage = self
+
+        class Blob:
+            def __init__(self, object_name):
+                self.name = object_name
+                self.content_disposition = None
+                self.cache_control = None
+
+            def upload_from_filename(self, path, content_type=None, timeout=None):
+                storage.uploads.append((name, self.name, path, self.content_disposition, content_type))
+
+        return SimpleNamespace(blob=Blob)
+
+
+def _publish_env(monkeypatch, tmp_path, releases=()):
+    exe = tmp_path / "NullColumnIdentifier.exe"
+    exe.write_bytes(b"MZ" + b"\0" * 1000)
+    client = AdminClient(releases=list(releases))
+    storage = FakeStorage()
+    monkeypatch.setattr(admin, "_client", lambda project, key: client)
+    monkeypatch.setattr(admin, "_storage_client", lambda bucket, key: storage)
+    return exe, client, storage
+
+
+def test_publish_uploads_with_clean_file_name_then_registers(monkeypatch, tmp_path, capsys):
+    exe, client, storage = _publish_env(monkeypatch, tmp_path, [{"version": "2.0.0"}])
+    rc = admin.main(["publish", "--bucket", "gs://qa-tools/null column/", "--file", str(exe),
+                     "--version", "2.3.0", "--notes", "Faster", "--mandatory", "--table", "a.b.rel"])
+    assert rc == 0
+    (bucket, obj, path, disposition, ctype), = storage.uploads
+    assert (bucket, obj, path) == ("qa-tools", "null column/NullColumnIdentifier-2.3.0.exe", str(exe))
+    assert disposition == 'attachment; filename="NullColumnIdentifier-2.3.0.exe"'
+    assert ctype == "application/vnd.microsoft.portable-executable"
+    sql, params = client.jobs[0]
+    assert params["v"] == "2.3.0" and params["m"] is True
+    assert params["u"] == "https://storage.cloud.google.com/qa-tools/null%20column/NullColumnIdentifier-2.3.0.exe"
+
+
+def test_publish_defaults_to_built_version(monkeypatch, tmp_path):
+    exe, client, storage = _publish_env(monkeypatch, tmp_path)
+    assert admin.main(["publish", "--bucket", "gs://b", "--file", str(exe), "--table", "a.b.rel"]) == 0
+    assert storage.uploads[0][1] == f"NullColumnIdentifier-{__version__}.exe"
+    assert client.jobs[0][1]["u"] == f"https://storage.cloud.google.com/b/NullColumnIdentifier-{__version__}.exe"
+
+
+def test_publish_refuses_old_version_before_uploading(monkeypatch, tmp_path, capsys):
+    exe, client, storage = _publish_env(monkeypatch, tmp_path, [{"version": "9.0.0"}])
+    assert admin.main(["publish", "--bucket", "gs://b", "--file", str(exe), "--version", "2.3.0",
+                       "--table", "a.b.rel"]) == 1
+    assert storage.uploads == [] and client.jobs == []
+    assert "Bump __version__" in capsys.readouterr().err
+
+
+def test_publish_needs_a_build_and_a_bucket(monkeypatch, tmp_path, capsys):
+    exe, client, storage = _publish_env(monkeypatch, tmp_path)
+    assert admin.main(["publish", "--bucket", "gs://b", "--file", str(tmp_path / "nope.exe"),
+                       "--table", "a.b.rel"]) == 1
+    assert "Build the app first" in capsys.readouterr().err
+    monkeypatch.setenv("NCI_CONFIG", str(tmp_path / "none.json"))
+    assert admin.main(["publish", "--file", str(exe), "--table", "a.b.rel"]) == 1
+    assert "--bucket" in capsys.readouterr().err
+    assert storage.uploads == []
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("gs://b/a/b/", ("b", "a/b")), ("b", ("b", "")), ("gs://b", ("b", "")), ("", ("", "")),
+])
+def test_split_gcs(text, expected):
+    assert admin._split_gcs(text) == expected

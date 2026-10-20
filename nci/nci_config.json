@@ -3,5 +3,6 @@
   "run_log_table": "dp-qa-derived-e0f9.qa_automation.run_log",
   "releases_table": "dp-qa-derived-e0f9.qa_automation.app_releases",
   "download_url": "",
-  "update_check_minutes": 60
+  "update_check_minutes": 60,
+  "release_bucket": ""
 }

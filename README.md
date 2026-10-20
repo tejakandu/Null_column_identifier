@@ -117,7 +117,8 @@ the table definitions first, run `python -m nci.admin sql --dataset …`.
 Users don't need permission to run jobs in that project. Runs are written with the
 streaming API, and releases are read with a row listing; neither starts a query.
 
-**3. Publish a release** after sharing the new build:
+**3. Publish a release.** `publish` (see *Releasing a new version*) does this for you. To
+register a file hosted somewhere else:
 
 ```bash
 python -m nci.admin release 2.3.0 --url "https://intranet/NullColumnIdentifier-2.3.0.zip" \
@@ -195,11 +196,37 @@ python app.py                   # or: python -m nci
 
 ## Building the Windows app
 
-Double-click `build_windows.bat`, or run it from a Command Prompt. It creates a virtual
-environment, runs the tests, builds with PyInstaller and checks the result. Share the whole
-`dist\NullColumnIdentifier` folder (zip it). Expect roughly 75–90 MB on disk, about 35 MB zipped.
-The build only bundles the Qt parts the app uses and leaves out pandas, numpy and grpc. Users only run `NullColumnIdentifier.exe` and do
-not need Python.
+Run `build_windows.bat`, either by double-clicking it or as `.\build_windows.bat` in a
+terminal. It sets up `.venv`, runs the tests, builds the app and checks the result. The
+window stays open at the end so you can read what happened.
+
+The result is a single file, `dist\NullColumnIdentifier.exe`, of about 60–90 MB. Users
+don't need Python, and the file can be renamed or moved anywhere. It takes a few seconds
+to start, because it unpacks itself each time.
+
+## Releasing a new version
+
+1. Raise `__version__` in `nci/__init__.py`, e.g. to `2.3.0`, and run `build_windows.bat`.
+2. Publish it. This uploads the `.exe` to Cloud Storage and registers the release in one
+   step:
+
+   ```powershell
+   .venv\Scripts\python -m nci.admin publish --bucket gs://BUCKET/FOLDER --notes "What changed"
+   ```
+
+   Add `--mandatory` to make older versions close and ask users to download this one. To
+   avoid typing the bucket each time, set `release_bucket` in `nci/nci_config.json`.
+
+The file is uploaded as `NullColumnIdentifier-2.3.0.exe`, with a `Content-Disposition` header,
+so browsers save it under that exact name and not `BUCKET_FOLDER_…`. The download link is
+`https://storage.cloud.google.com/…`, which works with the user's Google sign-in. Users need
+**Storage Object Viewer** on the bucket.
+
+To fix the name of a file that is already uploaded:
+
+```powershell
+gcloud storage objects update gs://BUCKET/FOLDER/NullColumnIdentifier.exe --content-disposition="attachment; filename=NullColumnIdentifier.exe"
+```
 
 ## Project layout
 

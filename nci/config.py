@@ -21,6 +21,7 @@ class AppConfig:
     run_log_table: str = ""     # project.dataset.table for one row per run
     releases_table: str = ""    # project.dataset.table of published versions
     download_url: str = ""      # fallback link when a release row has none
+    release_bucket: str = ""    # gs://bucket/folder that `nci.admin publish` uploads to
     update_check_minutes: int = 60
     source: str = ""            # file the settings came from
 
@@ -61,6 +62,7 @@ def load_config() -> AppConfig:
         run_log_table=str(merged.get("run_log_table") or "").strip(),
         releases_table=str(merged.get("releases_table") or "").strip(),
         download_url=str(merged.get("download_url") or "").strip(),
+        release_bucket=str(merged.get("release_bucket") or "").strip(),
         update_check_minutes=max(5, int(minutes)) if minutes.isdigit() else 60,
         source=source,
     )

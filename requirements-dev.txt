@@ -1,3 +1,4 @@
 -r requirements.txt
 pytest>=8
+google-cloud-storage>=2.10   # admin: nci.admin publish
 pyinstaller>=6.6

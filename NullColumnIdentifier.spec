@@ -1,4 +1,5 @@
 # PyInstaller build file: pyinstaller --noconfirm --clean NullColumnIdentifier.spec
+# Produces dist/NullColumnIdentifier.exe (a single file).
 # Kept small on purpose: only the Qt pieces the app uses, and none of the
 # optional heavy libraries google-cloud-bigquery can use (pandas, numpy, grpc).
 import re
@@ -16,6 +17,7 @@ for dist in ("google-cloud-bigquery", "google-api-core", "google-auth", "google-
 EXCLUDES = [
     # Heavy optional libraries; the app never imports them.
     "pandas", "numpy", "pyarrow", "grpc", "grpc_status", "google.cloud.bigquery_storage",
+    "google.cloud.storage",  # only the admin tool uploads releases
     "PIL", "lxml", "fpdf", "fontTools", "matplotlib", "IPython", "tkinter",
     # Qt modules the app does not use.
     "PySide6.QtNetwork", "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuickWidgets", "PySide6.QtPdf",
@@ -45,11 +47,13 @@ a.binaries = [b for b in a.binaries if not DROP.search(b[0]) and not DROP.search
 a.datas = [d for d in a.datas if not DROP.search(d[0])]
 
 pyz = PYZ(a.pure)
+# One self-contained .exe: it can be downloaded, renamed and run anywhere.
+# (A folder build needs its _internal folder next to the .exe, otherwise
+# Windows shows "Failed to load Python DLL".)
 exe = EXE(
-    pyz, a.scripts, [],
-    exclude_binaries=True,
+    pyz, a.scripts, a.binaries, a.datas, [],
     name="NullColumnIdentifier",
     icon="assets/app.ico",
     console=False,
+    upx=False,  # compressed exes start slower and trip antivirus more often
 )
-coll = COLLECT(exe, a.binaries, a.datas, name="NullColumnIdentifier")
