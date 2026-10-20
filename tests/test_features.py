@@ -210,8 +210,8 @@ def test_bundled_config_points_at_qa_tables(monkeypatch):
     monkeypatch.delenv("NCI_CONFIG", raising=False)
     cfg = config.load_config()
     assert cfg.source.endswith("nci_config.json")
-    assert cfg.run_log_table == "dp-qa-derived-e0f9.Qa_automation.run_log"
-    assert cfg.releases_table == "dp-qa-derived-e0f9.Qa_automation.app_releases"
+    assert cfg.run_log_table == "dp-qa-derived-e0f9.qa_automation.run_log"
+    assert cfg.releases_table == "dp-qa-derived-e0f9.qa_automation.app_releases"
     assert cfg.tracking_enabled and cfg.updates_enabled
 
 
@@ -279,7 +279,10 @@ def test_admin_setup_writes_config(monkeypatch, tmp_path):
     cfg = tmp_path / "nci_config.json"
     cfg.write_text(json.dumps({"_help": "keep me", "download_url": "https://dl"}))
     monkeypatch.setattr(admin, "CONFIG_PATH", str(cfg))
-    assert admin.main(["setup", "--dataset", "adm.nci"]) == 0
+    client.list_datasets = lambda project: []
+    assert admin.main(["setup", "--dataset", "adm.nci"]) == 1  # never creates unasked
+    assert created == []
+    assert admin.main(["setup", "--dataset", "adm.nci", "--create-dataset"]) == 0
     assert created == ["nci", "run_log", "app_releases"]
     data = json.loads(cfg.read_text())
     assert data == {"_help": "keep me", "download_url": "https://dl",
@@ -293,7 +296,7 @@ def test_admin_setup_uses_existing_dataset_without_creating(monkeypatch, tmp_pat
     def no_create(ds):
         raise AssertionError("must not try to create an existing dataset")
 
-    client = SimpleNamespace(get_dataset=lambda ref: SimpleNamespace(location="US"),
+    client = SimpleNamespace(get_dataset=lambda ref: SimpleNamespace(location="US", dataset_id="Qa_automation"),
                              create_dataset=no_create, create_table=lambda t: made.append(t.table_id))
     monkeypatch.setattr(admin, "_client", lambda project, key: client)
     monkeypatch.setattr(admin, "CONFIG_PATH", str(tmp_path / "c.json"))
@@ -304,3 +307,39 @@ def test_admin_setup_uses_existing_dataset_without_creating(monkeypatch, tmp_pat
     cfg = json.loads((tmp_path / "c.json").read_text())
     assert cfg["run_log_table"] == "dp-qa-derived-e0f9.Qa_automation.run_log"
     assert cfg["releases_table"] == "dp-qa-derived-e0f9.Qa_automation.app_releases"
+
+
+def test_admin_setup_fixes_dataset_case(monkeypatch, tmp_path, capsys):
+    from google.api_core.exceptions import NotFound
+
+    real = "qa_automation"
+    made = []
+
+    def get(ref):
+        if ref.split(".")[1] != real:
+            raise NotFound(ref)
+        return SimpleNamespace(location="US", dataset_id=real)
+
+    client = SimpleNamespace(get_dataset=get, list_datasets=lambda p: [SimpleNamespace(dataset_id=real)],
+                             create_table=lambda t: made.append(f"{t.dataset_id}.{t.table_id}"))
+    monkeypatch.setattr(admin, "_client", lambda project, key: client)
+    monkeypatch.setattr(admin, "CONFIG_PATH", str(tmp_path / "c.json"))
+    assert admin.main(["setup", "--dataset", "dp-qa-derived-e0f9.Qa_Automation"]) == 0
+    assert made == ["qa_automation.run_log", "qa_automation.app_releases"]
+    assert json.loads((tmp_path / "c.json").read_text())["run_log_table"] == \
+        "dp-qa-derived-e0f9.qa_automation.run_log"
+    assert "spelled 'qa_automation'" in capsys.readouterr().out
+
+
+def test_admin_errors_are_one_readable_line(monkeypatch, capsys):
+    from google.api_core.exceptions import Forbidden
+
+    def denied(ref):
+        raise Forbidden("Access Denied: Dataset dp-qa-derived-e0f9:qa_automation: Permission "
+                        "bigquery.datasets.get denied")
+
+    monkeypatch.setattr(admin, "_client", lambda project, key: SimpleNamespace(get_dataset=denied))
+    assert admin.main(["setup", "--dataset", "dp-qa-derived-e0f9.qa_automation"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error: Access denied") and "Traceback" not in err
+    assert "BigQuery Data Editor" in err

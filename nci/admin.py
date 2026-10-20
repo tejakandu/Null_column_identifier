@@ -61,16 +61,22 @@ def cmd_setup(args) -> int:
 
     project, dataset_id = _split_dataset(args.dataset)
     client = _client(project, args.key)
-    try:
-        # Use an existing dataset as is: creating needs project-level rights.
-        existing = client.get_dataset(f"{project}.{dataset_id}")
+    existing = _find_dataset(client, project, dataset_id)
+    if existing is not None:
+        # Use the existing dataset as is (creating one needs project-level rights).
+        dataset_id = existing.dataset_id  # exact spelling: dataset names are case-sensitive
         print(f"Using existing dataset {project}.{dataset_id} ({existing.location})")
-    except NotFound:
+    elif args.create_dataset:
         ds = bigquery.Dataset(f"{project}.{dataset_id}")
         ds.location = args.location
         ds.description = "Null Column Identifier: run tracking and app releases"
         client.create_dataset(ds)
         print(f"Created dataset {project}.{dataset_id} ({args.location})")
+    else:
+        print(f"Dataset {project}.{dataset_id} was not found (names are case-sensitive).\n"
+              f"Check the name in the BigQuery console, or add --create-dataset to create it.",
+              file=sys.stderr)
+        return 1
 
     runs = bigquery.Table(f"{project}.{dataset_id}.{RUN_LOG}", schema=to_bigquery_schema(RUN_LOG_SCHEMA))
     runs.time_partitioning = bigquery.TimePartitioning(field="execution_time")
@@ -94,6 +100,25 @@ def cmd_setup(args) -> int:
           f"  - read releases: roles/bigquery.dataViewer on {RELEASES}\n"
           "  (or roles/bigquery.dataEditor on the whole dataset)")
     return 0
+
+
+def _find_dataset(client, project: str, dataset_id: str):
+    """The dataset, also when only the letter case differs; None if missing."""
+    from google.api_core.exceptions import NotFound
+
+    try:
+        return client.get_dataset(f"{project}.{dataset_id}")
+    except NotFound:
+        pass
+    try:
+        matches = [d.dataset_id for d in client.list_datasets(project)
+                   if d.dataset_id.lower() == dataset_id.lower()]
+    except Exception:  # noqa: BLE001 - listing is only a convenience
+        matches = []
+    if len(matches) == 1:
+        print(f"Note: the dataset is spelled {matches[0]!r}, using that.")
+        return client.get_dataset(f"{project}.{matches[0]}")
+    return None
 
 
 def cmd_release(args) -> int:
@@ -190,9 +215,11 @@ def main(argv=None) -> int:
     p.add_argument("--key", default="", help="service account key file (default: your gcloud login)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("setup", help="create the dataset and tables, and write nci_config.json")
+    s = sub.add_parser("setup", help="create the tables in a dataset, and write nci_config.json")
     s.add_argument("--dataset", required=True, help="PROJECT.DATASET to create the tables in")
-    s.add_argument("--location", default="US", help="dataset location (default US)")
+    s.add_argument("--create-dataset", action="store_true",
+                   help="create the dataset if it does not exist (needs project-level rights)")
+    s.add_argument("--location", default="US", help="location for a new dataset (default US)")
     s.set_defaults(fn=cmd_setup)
 
     r = sub.add_parser("release", help="publish a new version")
@@ -219,7 +246,20 @@ def main(argv=None) -> int:
     q.set_defaults(fn=cmd_sql)
 
     args = p.parse_args(argv)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except Exception as exc:  # noqa: BLE001 - one readable line instead of a traceback
+        from google.api_core.exceptions import GoogleAPICallError
+
+        from .core import friendly_error
+
+        if not isinstance(exc, (GoogleAPICallError, OSError)) and type(exc).__name__ != "DefaultCredentialsError":
+            raise
+        print(f"Error: {friendly_error(exc)}", file=sys.stderr)
+        if "permission" in str(exc).lower() or "denied" in str(exc).lower():
+            print("Ask the project owner for BigQuery Data Editor on the dataset "
+                  "(and BigQuery Job User on the project to publish releases).", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
