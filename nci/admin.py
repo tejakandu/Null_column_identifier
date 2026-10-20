@@ -56,16 +56,21 @@ def _client(project: str, key: str):
 
 
 def cmd_setup(args) -> int:
-    from google.api_core.exceptions import Conflict
+    from google.api_core.exceptions import Conflict, NotFound
     from google.cloud import bigquery
 
     project, dataset_id = _split_dataset(args.dataset)
     client = _client(project, args.key)
-    ds = bigquery.Dataset(f"{project}.{dataset_id}")
-    ds.location = args.location
-    ds.description = "Null Column Identifier: run tracking and app releases"
-    client.create_dataset(ds, exists_ok=True)
-    print(f"Dataset {project}.{dataset_id} ready")
+    try:
+        # Use an existing dataset as is: creating needs project-level rights.
+        existing = client.get_dataset(f"{project}.{dataset_id}")
+        print(f"Using existing dataset {project}.{dataset_id} ({existing.location})")
+    except NotFound:
+        ds = bigquery.Dataset(f"{project}.{dataset_id}")
+        ds.location = args.location
+        ds.description = "Null Column Identifier: run tracking and app releases"
+        client.create_dataset(ds)
+        print(f"Created dataset {project}.{dataset_id} ({args.location})")
 
     runs = bigquery.Table(f"{project}.{dataset_id}.{RUN_LOG}", schema=to_bigquery_schema(RUN_LOG_SCHEMA))
     runs.time_partitioning = bigquery.TimePartitioning(field="execution_time")
@@ -175,7 +180,7 @@ def _write_config(updates: dict) -> None:
     except (OSError, ValueError):
         data = {}
     data.update(updates)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+    with open(CONFIG_PATH, "w", encoding="utf-8", newline="\n") as fh:  # same bytes on Windows
         json.dump(data, fh, indent=2)
         fh.write("\n")
 

@@ -264,8 +264,14 @@ def test_admin_withdraw_and_list(monkeypatch, capsys):
 def test_admin_setup_writes_config(monkeypatch, tmp_path):
     from google.cloud import bigquery
 
+    from google.api_core.exceptions import NotFound
+
     created = []
-    client = SimpleNamespace(create_dataset=lambda ds, exists_ok: created.append(ds.dataset_id),
+
+    def missing(ref):
+        raise NotFound(ref)
+
+    client = SimpleNamespace(get_dataset=missing, create_dataset=lambda ds: created.append(ds.dataset_id),
                              create_table=lambda t: created.append(t.table_id))
     monkeypatch.setattr(admin, "_client", lambda project, key: client)
     cfg = tmp_path / "nci_config.json"
@@ -277,3 +283,22 @@ def test_admin_setup_writes_config(monkeypatch, tmp_path):
     assert data == {"_help": "keep me", "download_url": "https://dl",
                     "run_log_table": "adm.nci.run_log", "releases_table": "adm.nci.app_releases"}
     assert isinstance(bigquery.Table("a.b.c"), bigquery.Table)
+
+
+def test_admin_setup_uses_existing_dataset_without_creating(monkeypatch, tmp_path, capsys):
+    made = []
+
+    def no_create(ds):
+        raise AssertionError("must not try to create an existing dataset")
+
+    client = SimpleNamespace(get_dataset=lambda ref: SimpleNamespace(location="US"),
+                             create_dataset=no_create, create_table=lambda t: made.append(t.table_id))
+    monkeypatch.setattr(admin, "_client", lambda project, key: client)
+    monkeypatch.setattr(admin, "CONFIG_PATH", str(tmp_path / "c.json"))
+    assert admin.main(["setup", "--dataset", "dp-qa-derived-e0f9.Qa_automation"]) == 0
+    assert made == ["run_log", "app_releases"]
+    out = capsys.readouterr().out
+    assert "Using existing dataset dp-qa-derived-e0f9.Qa_automation" in out
+    cfg = json.loads((tmp_path / "c.json").read_text())
+    assert cfg["run_log_table"] == "dp-qa-derived-e0f9.Qa_automation.run_log"
+    assert cfg["releases_table"] == "dp-qa-derived-e0f9.Qa_automation.app_releases"
