@@ -152,21 +152,26 @@ def cmd_publish(args) -> int:
     if not _is_newer(args, table, version):  # check before uploading anything
         return 1
 
+    url = upload_build(path, version, bucket_name, prefix, args.key)
+    _insert_release(args, table, version, url)
+    print("\nUsers download it with their Google sign-in; they need Storage Object Viewer on the bucket.")
+    return 0
+
+
+def upload_build(path: str, version: str, bucket_name: str, prefix: str, key: str = "") -> str:
+    """Upload the .exe as NullColumnIdentifier-<version>.exe; returns the download link."""
     file_name = f"NullColumnIdentifier-{version}.exe"
     object_name = f"{prefix}/{file_name}" if prefix else file_name
-    blob = _storage_client(bucket_name, args.key).bucket(bucket_name).blob(object_name)
+    blob = _storage_client(bucket_name, key).bucket(bucket_name).blob(object_name)
     # Content-Disposition makes browsers save it under this exact name
     # (otherwise downloads can come out as "<bucket>_<folder>_<file>").
     blob.content_disposition = f'attachment; filename="{file_name}"'
     blob.cache_control = "no-cache"
     size_mb = os.path.getsize(path) / 2 ** 20
-    print(f"Uploading {path} ({size_mb:.0f} MB) to gs://{bucket_name}/{object_name} ...")
+    print(f"Uploading {os.path.basename(path)} ({size_mb:.0f} MB) to gs://{bucket_name}/{object_name} ...")
     blob.upload_from_filename(path, content_type="application/vnd.microsoft.portable-executable",
                               timeout=600)
-    url = f"https://storage.cloud.google.com/{bucket_name}/{quote(object_name)}"
-    _insert_release(args, table, version, url)
-    print("\nUsers download it with their Google sign-in; they need Storage Object Viewer on the bucket.")
-    return 0
+    return f"https://storage.cloud.google.com/{bucket_name}/{quote(object_name)}"
 
 
 def _is_newer(args, table: str, version: str = "") -> bool:
@@ -175,8 +180,8 @@ def _is_newer(args, table: str, version: str = "") -> bool:
     newest = max((r.key for r in current), default=(0,))
     if parse_version(version) <= newest and not args.force:
         print(f"Version {version} is not newer than the latest published version "
-              f"({'.'.join(map(str, newest))}). Bump __version__ in nci/__init__.py and rebuild, "
-              "or use --force to publish anyway.", file=sys.stderr)
+              f"({'.'.join(map(str, newest))}). Use release.bat, which picks the next version "
+              "and builds it, or --force to publish anyway.", file=sys.stderr)
         return False
     return True
 

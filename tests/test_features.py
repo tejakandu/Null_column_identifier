@@ -400,7 +400,7 @@ def test_publish_refuses_old_version_before_uploading(monkeypatch, tmp_path, cap
     assert admin.main(["publish", "--bucket", "gs://b", "--file", str(exe), "--version", "2.3.0",
                        "--table", "a.b.rel"]) == 1
     assert storage.uploads == [] and client.jobs == []
-    assert "Bump __version__" in capsys.readouterr().err
+    assert "Use release.bat" in capsys.readouterr().err
 
 
 def test_publish_needs_a_build_and_a_bucket(monkeypatch, tmp_path, capsys):

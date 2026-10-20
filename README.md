@@ -117,8 +117,8 @@ the table definitions first, run `python -m nci.admin sql --dataset …`.
 Users don't need permission to run jobs in that project. Runs are written with the
 streaming API, and releases are read with a row listing; neither starts a query.
 
-**3. Publish a release.** `publish` (see *Releasing a new version*) does this for you. To
-register a file hosted somewhere else:
+**3. Publish a release** with `release.bat` (see *Releasing a new version*). To register a
+file hosted somewhere else:
 
 ```bash
 python -m nci.admin release 2.3.0 --url "https://intranet/NullColumnIdentifier-2.3.0.zip" \
@@ -206,23 +206,47 @@ to start, because it unpacks itself each time.
 
 ## Releasing a new version
 
-1. Raise `__version__` in `nci/__init__.py`, e.g. to `2.3.0`, and run `build_windows.bat`.
-2. Publish it. This uploads the `.exe` to Cloud Storage and registers the release in one
-   step:
+Double-click **`release.bat`**, or run `.\release.bat` in a terminal. It asks three questions:
 
-   ```powershell
-   .venv\Scripts\python -m nci.admin publish --bucket gs://BUCKET/FOLDER --notes "What changed"
-   ```
+```
+Latest published version: 2.2.1
+New version [2.2.2]:                                  <- Enter accepts the suggestion
+What changed? (shown to users): Faster browse
+Force everyone on older versions to update? [y/N]: n
 
-   Add `--mandatory` to make older versions close and ask users to download this one. To
-   avoid typing the bucket each time, set `release_bucket` in `nci/nci_config.json`.
+Release plan
+  Version      2.2.2   (latest is 2.2.1)
+  Update       optional
+  Upload to    gs://BUCKET/FOLDER/NullColumnIdentifier-2.2.2.exe
+Go ahead? [Y/n]:
+```
 
-The file is uploaded as `NullColumnIdentifier-2.3.0.exe`, with a `Content-Disposition` header,
-so browsers save it under that exact name and not `BUCKET_FOLDER_…`. The download link is
-`https://storage.cloud.google.com/…`, which works with the user's Google sign-in. Users need
-**Storage Object Viewer** on the bucket.
+Then it does the rest:
 
-To fix the name of a file that is already uploaded:
+1. Runs the tests.
+2. Builds the app with the new version stamped in.
+3. Starts the built app to check that it works and reports that exact version.
+4. Uploads it as `NullColumnIdentifier-2.2.2.exe`. The file name is set, so browsers don't
+   add the bucket name to it.
+5. Registers the release, so users see the update within the hour. If you chose a forced
+   update, older versions close.
+
+It stops before uploading if any step fails, or if the version isn't newer than the
+latest. You never edit a version number in the code, so there's nothing to commit after a
+release. The first time, it asks for the Cloud Storage folder (`gs://BUCKET/FOLDER`) and
+remembers it in `.nci_release.json`, which is not committed.
+
+Other ways to run it:
+
+- `release.bat --dry-run`: build and check only. The `.exe` is saved in `releases\`, and
+  nothing is published.
+- `release.bat --yes`: no questions. Uses the suggested version and an optional update.
+  Add `--notes "…"` and `--mandatory` as needed.
+- To jump to a bigger version (e.g. 3.0.0), type it at the "New version" prompt.
+- To pull a bad release: `.venv\Scripts\python -m nci.admin withdraw 2.2.2`.
+
+Users need **Storage Object Viewer** on the bucket to download; the link uses their Google
+sign-in. To fix the file name of something uploaded by hand earlier:
 
 ```powershell
 gcloud storage objects update gs://BUCKET/FOLDER/NullColumnIdentifier.exe --content-disposition="attachment; filename=NullColumnIdentifier.exe"
@@ -239,7 +263,8 @@ nci/identity.py        who ran it (Windows name, computer, Google account)
 nci/tracking.py        run-tracking rows (one per table) and BigQuery schema
 nci/releases.py        versions, release table, update decision
 nci/config.py          admin settings (nci_config.json)
-nci/admin.py           admin tool: setup, release, withdraw, list, sql
+nci/admin.py           admin tool: setup, release, publish, withdraw, list, sql
+nci/release.py         one-command release (release.bat)
 nci/gui/pdflog.py      PDF log
 nci/inputs.py          import/export of table lists
 nci/gui/               PySide6 desktop interface

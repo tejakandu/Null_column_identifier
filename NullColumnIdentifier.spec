@@ -6,7 +6,11 @@ import re
 
 from PyInstaller.utils.hooks import copy_metadata
 
+import os
+
 datas = [("nci/nci_config.json", "nci")]  # admin settings (tables, download link)
+if os.path.exists("nci/_build_version.txt"):  # version stamped by `release.bat`
+    datas.append(("nci/_build_version.txt", "nci"))
 for dist in ("google-cloud-bigquery", "google-api-core", "google-auth", "google-cloud-core",
              "proto-plus", "protobuf"):
     try:

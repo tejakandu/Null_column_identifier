@@ -12,3 +12,7 @@ NullColumns_*.xlsx
 !.vscode/*.json
 # ...except the app's admin settings (table names, download link; no secrets)
 !nci/nci_config.json
+# release tooling: stamped version, local release settings, built copies
+nci/_build_version.txt
+.nci_release.json
+releases/

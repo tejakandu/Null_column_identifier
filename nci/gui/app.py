@@ -45,9 +45,25 @@ def selftest() -> int:
         with open(f"{tmp}/l.pdf", "rb") as fh:
             assert fh.read(4) == b"%PDF"
     cfg = load_config()
-    print(f"{APP_NAME} {__version__}: OK (bigquery {bigquery.__version__}; config {cfg.source}; "
-          f"tracking {'on' if cfg.tracking_enabled else 'off'}, updates {'on' if cfg.updates_enabled else 'off'})")
+    message = (f"{APP_NAME} {__version__}: OK (bigquery {bigquery.__version__}; config {cfg.source}; "
+               f"tracking {'on' if cfg.tracking_enabled else 'off'}, "
+               f"updates {'on' if cfg.updates_enabled else 'off'})")
+    print(message)
+    report = _arg_value("--report")
+    if report:
+        # The windowed .exe has no console to print to, so the release tool
+        # reads the result from this file.
+        import json
+
+        with open(report, "w", encoding="utf-8") as fh:
+            json.dump({"ok": True, "version": __version__, "message": message,
+                       "tracking": cfg.tracking_enabled, "updates": cfg.updates_enabled}, fh)
     return 0
+
+
+def _arg_value(name: str) -> str:
+    args = sys.argv[1:]
+    return args[args.index(name) + 1] if name in args and args.index(name) + 1 < len(args) else ""
 
 
 def main() -> int:

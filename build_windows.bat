@@ -101,8 +101,7 @@ echo ============================================================
 echo  Done. The app is one file you can share as is:
 echo    %CD%\dist\NullColumnIdentifier.exe
 echo.
-echo  To release it to everyone:
-echo    .venv\Scripts\python -m nci.admin publish --bucket gs://BUCKET/FOLDER --notes "What changed"
+echo  To release a new version to everyone, run release.bat
 echo ============================================================
 echo.
 pause
