@@ -206,11 +206,13 @@ def test_override_cannot_blank_bundled_settings(tmp_path, monkeypatch):
     assert cfg.download_url == "https://new"                  # real values still override
 
 
-def test_bundled_config_is_valid_and_off_by_default(monkeypatch):
+def test_bundled_config_points_at_qa_tables(monkeypatch):
     monkeypatch.delenv("NCI_CONFIG", raising=False)
     cfg = config.load_config()
     assert cfg.source.endswith("nci_config.json")
-    assert not cfg.tracking_enabled and not cfg.updates_enabled
+    assert cfg.run_log_table == "dp-qa-derived-e0f9.Qa_automation.run_log"
+    assert cfg.releases_table == "dp-qa-derived-e0f9.Qa_automation.app_releases"
+    assert cfg.tracking_enabled and cfg.updates_enabled
 
 
 # --------------------------------------------------------------------------- admin tool

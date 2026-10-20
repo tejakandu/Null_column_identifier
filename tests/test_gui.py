@@ -9,6 +9,7 @@ from openpyxl import load_workbook  # noqa: E402
 from PySide6.QtCore import QSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from nci.config import AppConfig  # noqa: E402
 from nci.core import TableTarget  # noqa: E402
 from nci.gui.main_window import MainWindow  # noqa: E402
 from nci.gui.style import STYLESHEET  # noqa: E402
@@ -33,7 +34,7 @@ def app():
 def window(app, tmp_path):
     client = FakeCatalogClient(TABLES)
     settings = QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat)
-    w = MainWindow(client_factory=lambda project, key: client, settings=settings)
+    w = MainWindow(client_factory=lambda project, key: client, settings=settings, config=AppConfig())
     w.out_edit.setText(str(tmp_path / "out"))
     w.open_check.setChecked(False)
     w.show()
@@ -94,11 +95,11 @@ def test_cancel(app, window, monkeypatch):
 
 def test_settings_and_tables_persist(app, tmp_path):
     settings = QSettings(str(tmp_path / "p.ini"), QSettings.IniFormat)
-    w = MainWindow(client_factory=lambda p, k: None, settings=settings)
+    w = MainWindow(client_factory=lambda p, k: None, settings=settings, config=AppConfig())
     w._add_targets([TableTarget.parse("a.b.c")])
     w.limit_spin.setValue(50)
     w.close()
-    w2 = MainWindow(client_factory=lambda p, k: None, settings=settings)
+    w2 = MainWindow(client_factory=lambda p, k: None, settings=settings, config=AppConfig())
     assert w2.model.targets() == [TableTarget("a", "b", "c")]
     assert w2.limit_spin.value() == 50
     w2.close()
