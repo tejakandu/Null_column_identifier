@@ -1,27 +1,116 @@
 @echo off
 REM Builds dist\NullColumnIdentifier\NullColumnIdentifier.exe
-REM Run from this folder in a normal Command Prompt. Needs Python 3.10+ on PATH.
-setlocal
+REM Double-click it, or run it from a Command Prompt in this folder.
+setlocal EnableExtensions
 cd /d "%~dp0"
+title Null Column Identifier - build
 
-if not exist .venv (
-    python -m venv .venv || goto :error
+echo ============================================================
+echo  Null Column Identifier - Windows build
+echo ============================================================
+echo.
+
+REM ---- 1. Python -------------------------------------------------------------
+echo [1/5] Finding Python...
+set "VENV_PY=.venv\Scripts\python.exe"
+if exist "%VENV_PY%" goto :have_venv
+
+set "PY="
+py -3 -c "import sys" >nul 2>&1 && set "PY=py -3"
+if not defined PY python -c "import sys" >nul 2>&1 && set "PY=python"
+if not defined PY (
+    echo.
+    echo  Python was not found.
+    echo  Install Python 3.10 or newer from https://www.python.org/downloads/
+    echo  and tick "Add python.exe to PATH" during setup. Then run this again.
+    goto :failed
 )
-call .venv\Scripts\activate.bat || goto :error
-python -m pip install --upgrade pip >nul
-python -m pip install -r requirements-dev.txt || goto :error
+%PY% -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"
+if errorlevel 1 (
+    echo.
+    echo  Python 3.10 or newer is needed. Found:
+    %PY% --version
+    goto :failed
+)
+echo       Creating a virtual environment in .venv ...
+%PY% -m venv .venv
+if errorlevel 1 goto :failed
 
-python -m pytest -q tests || goto :error
+:have_venv
+"%VENV_PY%" --version
+"%VENV_PY%" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"
+if errorlevel 1 (
+    echo.
+    echo  The .venv folder uses a Python older than 3.10.
+    echo  Delete the .venv folder and run this again.
+    goto :failed
+)
 
-pyinstaller --noconfirm --clean NullColumnIdentifier.spec || goto :error
-dist\NullColumnIdentifier\NullColumnIdentifier.exe --selftest || goto :error
+REM ---- 2. Packages -------------------------------------------------------------
+echo.
+echo [2/5] Installing packages (first time takes a few minutes)...
+"%VENV_PY%" -m pip install --disable-pip-version-check -q -r requirements-dev.txt
+if errorlevel 1 (
+    echo.
+    echo  Installing packages failed. On a company network this is usually the
+    echo  proxy or VPN: connect to the VPN, or ask IT for the pip proxy settings.
+    goto :failed
+)
+
+REM ---- 3. Tests ----------------------------------------------------------------
+echo.
+echo [3/5] Running tests...
+"%VENV_PY%" -m pytest -q tests
+if errorlevel 1 (
+    echo.
+    echo  Some tests failed - see above. Please send a screenshot of this window.
+    choice /C YN /M "Build the app anyway"
+    if errorlevel 2 goto :failed
+)
+
+REM ---- 4. Build ----------------------------------------------------------------
+echo.
+echo [4/5] Building the app...
+tasklist /FI "IMAGENAME eq NullColumnIdentifier.exe" 2>nul | find /I "NullColumnIdentifier.exe" >nul
+if not errorlevel 1 (
+    echo.
+    echo  Null Column Identifier is running. Close it first, then press a key.
+    pause >nul
+)
+"%VENV_PY%" -m PyInstaller --noconfirm --clean --log-level WARN NullColumnIdentifier.spec
+if errorlevel 1 (
+    echo.
+    echo  The build failed - see above. If the error mentions "Access is denied",
+    echo  close the app and any open dist folder, or ask IT whether antivirus
+    echo  blocks PyInstaller.
+    goto :failed
+)
+
+REM ---- 5. Check ----------------------------------------------------------------
+echo.
+echo [5/5] Checking the built app...
+dist\NullColumnIdentifier\NullColumnIdentifier.exe --selftest
+if errorlevel 1 (
+    echo.
+    echo  The app was built but its self-test failed.
+    goto :failed
+)
 
 echo.
-echo Done. The app is in dist\NullColumnIdentifier\NullColumnIdentifier.exe
-echo Zip the whole dist\NullColumnIdentifier folder to share it.
+echo ============================================================
+echo  Done. The app is:
+echo    %CD%\dist\NullColumnIdentifier\NullColumnIdentifier.exe
+echo  To share it, zip the whole dist\NullColumnIdentifier folder.
+echo ============================================================
+echo.
+pause
 exit /b 0
 
-:error
+:failed
 echo.
-echo Build failed. See the messages above.
+echo ============================================================
+echo  Build stopped. Scroll up for the reason.
+echo ============================================================
+echo.
+pause
 exit /b 1
