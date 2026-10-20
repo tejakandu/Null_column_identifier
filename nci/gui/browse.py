@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFrame, QHBoxLayout, 
                                QSplitter, QTreeView, QVBoxLayout, QWidget)
 
 from ..catalog import Catalog, age_text
-from ..core import TableTarget, friendly_error
+from ..core import TableTarget
 from .style import MUTED
 from .workers import Task
 

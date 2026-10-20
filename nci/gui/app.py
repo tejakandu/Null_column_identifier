@@ -28,11 +28,25 @@ def selftest() -> int:
     target = TableTarget("p", "d", "t")
     spec = ColumnSpec("c", "STRING", "NULLABLE", "t.`c` IS NOT NULL")
     build_query(target, [spec])
+    from PySide6.QtWidgets import QApplication
+
+    from ..config import load_config
+    from ..identity import local_identity
+    from .pdflog import write_pdf_log
+
+    _app = QApplication.instance() or QApplication(sys.argv[:1])  # needed for fonts in the PDF
+    results = [TableResult(target, "ok", 1, [ColumnResult(spec, 0)])]
+    info = RunInfo(run_id="selftest", identity=local_identity("selftest"))
     with tempfile.TemporaryDirectory() as tmp:
-        write_report(f"{tmp}/r.xlsx", [TableResult(target, "ok", 1, [ColumnResult(spec, 0)])], RunInfo())
+        write_report(f"{tmp}/r.xlsx", results, info)
         save_targets(f"{tmp}/l.xlsx", [target])
         assert load_targets(f"{tmp}/l.xlsx")[0] == [target]
-    print(f"{APP_NAME} {__version__}: OK (bigquery {bigquery.__version__})")
+        write_pdf_log(f"{tmp}/l.pdf", info, results, ["selftest"])
+        with open(f"{tmp}/l.pdf", "rb") as fh:
+            assert fh.read(4) == b"%PDF"
+    cfg = load_config()
+    print(f"{APP_NAME} {__version__}: OK (bigquery {bigquery.__version__}; config {cfg.source}; "
+          f"tracking {'on' if cfg.tracking_enabled else 'off'}, updates {'on' if cfg.updates_enabled else 'off'})")
     return 0
 
 

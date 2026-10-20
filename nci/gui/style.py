@@ -26,6 +26,7 @@ QWidget {{ font-size: 10pt; color: #1F2328; }}
 QLabel#title {{ font-size: 17pt; font-weight: 600; color: #0B2545; }}
 QLabel#subtitle {{ color: {MUTED}; }}
 QLabel#sectionTitle {{ font-size: 11pt; font-weight: 600; color: #0B2545; }}
+QLabel#credits {{ color: {MUTED}; font-size: 8.5pt; }}
 QLabel#hint {{ color: {MUTED}; font-size: 9pt; }}
 QFrame#card {{
     background: white; border: 1px solid #E1E4E8; border-radius: 10px;

@@ -10,3 +10,5 @@ NullColumns_*.xlsx
 # never commit credentials
 *.json
 !.vscode/*.json
+# ...except the app's admin settings (table names, download link; no secrets)
+!nci/nci_config.json

@@ -21,7 +21,7 @@ class FakeJob:
     def done(self):
         return True
 
-    def result(self):
+    def result(self, timeout=None):
         return [self._row]
 
     def cancel(self):
@@ -31,11 +31,16 @@ class FakeJob:
 class FakeClient:
     """Tables: {ref: (schema, rows)}; rows are nested dicts."""
 
-    def __init__(self, tables, bad_columns=(), fail_query=None):
+    def __init__(self, tables, bad_columns=(), fail_query=None, session_user="tester@example.com",
+                 releases=(), insert_error=None):
         self.tables = tables
         self.bad_columns = set(bad_columns)  # display names whose SQL "fails"
         self.fail_query = fail_query
         self.queries = []
+        self.session_user = session_user
+        self.releases = list(releases)       # rows (dicts) returned by list_rows
+        self.inserted = []                   # (table, rows) from insert_rows_json
+        self.insert_error = insert_error
 
     def get_table(self, ref):
         if ref not in self.tables:
@@ -45,6 +50,10 @@ class FakeClient:
 
     def query(self, sql, job_config=None):
         self.queries.append(sql)
+        if "SESSION_USER()" in sql:
+            if isinstance(self.session_user, Exception):
+                raise self.session_user
+            return FakeJob({"who": self.session_user}, 0)
         if self.fail_query:
             raise self.fail_query
         from nci.core import flatten_schema
@@ -59,6 +68,17 @@ class FakeClient:
                 raise BadRequest(f"Syntax error near {spec.name}")
             out[alias] = sum(1 for r in rows if _has_value(r, spec.name.split(".")))
         return FakeJob(out)
+
+    def insert_rows_json(self, table, rows, row_ids=None, timeout=None):
+        if isinstance(self.insert_error, Exception):
+            raise self.insert_error
+        if self.insert_error:
+            return [{"index": 0, "errors": [{"reason": "invalid", "message": self.insert_error}]}]
+        self.inserted.append((table, rows))
+        return []
+
+    def list_rows(self, table, max_results=None, timeout=None):
+        return [_Row(r) for r in self.releases]
 
 
 def _has_value(value, path):
@@ -86,3 +106,7 @@ class FakeCatalogClient(FakeClient):
     def list_tables(self, dataset_ref):
         return [SimpleNamespace(table_id=r.split(".")[2], table_type="TABLE")
                 for r in sorted(self.tables) if r.startswith(dataset_ref + ".")]
+
+
+class _Row(dict):
+    """Mimics google.cloud.bigquery.Row enough for list_rows users."""

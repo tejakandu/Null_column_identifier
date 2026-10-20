@@ -1,0 +1,7 @@
+{
+  "_help": "Admin settings, bundled into the app. Leave a value empty to turn that feature off. Set them up with: python -m nci.admin setup --dataset PROJECT.DATASET",
+  "run_log_table": "",
+  "releases_table": "",
+  "download_url": "",
+  "update_check_minutes": 60
+}

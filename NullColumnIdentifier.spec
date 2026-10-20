@@ -5,7 +5,7 @@ import re
 
 from PyInstaller.utils.hooks import copy_metadata
 
-datas = []
+datas = [("nci/nci_config.json", "nci")]  # admin settings (tables, download link)
 for dist in ("google-cloud-bigquery", "google-api-core", "google-auth", "google-cloud-core",
              "proto-plus", "protobuf"):
     try:

@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from openpyxl import load_workbook  # noqa: E402
-from PySide6.QtCore import QSettings, Qt  # noqa: E402
+from PySide6.QtCore import QSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from nci.core import TableTarget  # noqa: E402
@@ -84,7 +84,7 @@ def test_selected_rows_only(app, window):
 
 
 def test_cancel(app, window, monkeypatch):
-    import nci.core
+
     window._add_targets([TableTarget.parse(r) for r in TABLES])
     window.run_scan()
     window.cancel_scan()

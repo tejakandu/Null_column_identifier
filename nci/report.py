@@ -11,8 +11,9 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.hyperlink import Hyperlink
 
-from . import APP_NAME, __version__
+from . import APP_NAME, AUTHOR, DESIGNED_BY, __version__
 from .core import TableResult, format_bytes, format_duration
+from .identity import RunIdentity
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
 HEADER_FONT = Font(bold=True, color="FFFFFF")
@@ -35,6 +36,44 @@ class RunInfo:
     started: datetime | None = None
     finished: datetime | None = None
     notes: list[str] = field(default_factory=list)
+    run_id: str = ""
+    identity: RunIdentity | None = None
+    query_project: str = ""
+    parallel: int = 0
+    safety_limit_gb: float = 0.0
+
+    @property
+    def who(self) -> str:
+        return self.identity.display if self.identity else self.executed_by
+
+    def details(self, results: list[TableResult]) -> list[tuple[str, str]]:
+        """Label/value pairs describing the run (Excel, log and PDF share these)."""
+        ok = [r for r in results if r.status == "ok"]
+        ident = self.identity or RunIdentity()
+        rows = [
+            ("Tool", f"{APP_NAME} {__version__}"),
+            ("Designed by", DESIGNED_BY),
+            ("Author", AUTHOR),
+            ("Run ID", self.run_id),
+            ("Executed by", self.who),
+            ("Google account", ident.google_account or "(not available)"),
+            ("Sign-in method", ident.auth_method),
+            ("Computer", f"{ident.machine} · {ident.os}".strip(" ·")),
+            ("Started", self.started.strftime("%Y-%m-%d %H:%M:%S") if self.started else ""),
+            ("Finished", self.finished.strftime("%Y-%m-%d %H:%M:%S") if self.finished else ""),
+            ("Duration", format_duration((self.finished - self.started).total_seconds())
+             if self.started and self.finished else ""),
+            ("Query project", self.query_project or "each table's own project"),
+            ("Tables at the same time", str(self.parallel) if self.parallel else ""),
+            ("Safety limit per query", f"{self.safety_limit_gb:g} GB" if self.safety_limit_gb else "none"),
+            ("Tables requested", str(len(results))),
+            ("Tables scanned", str(len(ok))),
+            ("Tables failed", str(sum(r.status == "error" for r in results))),
+            ("Tables cancelled", str(sum(r.status == "cancelled" for r in results))),
+            ("Null columns found", str(sum(len(r.null_columns) for r in ok))),
+            ("Data scanned", format_bytes(sum(r.bytes_processed for r in results))),
+        ]
+        return [(k, v) for k, v in rows if v != ""]
 
 
 def write_report(path: str, results: list[TableResult], info: RunInfo) -> str:
@@ -144,20 +183,7 @@ def _write_detail(ws, res: TableResult):
 
 
 def _write_run_info(ws, results, info: RunInfo):
-    ok = [r for r in results if r.status == "ok"]
-    rows = [
-        ("Tool", f"{APP_NAME} {__version__}"),
-        ("Executed by", info.executed_by),
-        ("Started", info.started.strftime("%Y-%m-%d %H:%M:%S") if info.started else ""),
-        ("Finished", info.finished.strftime("%Y-%m-%d %H:%M:%S") if info.finished else ""),
-        ("Duration", format_duration((info.finished - info.started).total_seconds())
-         if info.started and info.finished else ""),
-        ("Tables requested", len(results)),
-        ("Tables scanned", len(ok)),
-        ("Tables failed", sum(r.status == "error" for r in results)),
-        ("Tables cancelled", sum(r.status == "cancelled" for r in results)),
-        ("Null columns found", sum(len(r.null_columns) for r in ok)),
-        ("Data scanned", format_bytes(sum(r.bytes_processed for r in results))),
+    rows = info.details(results) + [
         ("Definition", "A column is reported as null when not a single row has a value in it. "
                        "For arrays, an empty array counts as no value. Fields inside repeated "
                        "records are null when no element in any row has a value."),
@@ -168,7 +194,7 @@ def _write_run_info(ws, results, info: RunInfo):
     for i, (k, v) in enumerate(rows, start=3):
         ws.cell(i, 1, k).font = Font(bold=True)
         ws.cell(i, 2, v).alignment = Alignment(wrap_text=True, vertical="top")
-    ws.column_dimensions["A"].width = 22
+    ws.column_dimensions["A"].width = 24
     ws.column_dimensions["B"].width = 90
 
 

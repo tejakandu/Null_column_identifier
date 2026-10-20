@@ -15,14 +15,16 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QC
                                QProgressBar, QPushButton, QRadioButton, QSizePolicy, QSplitter,
                                QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
-from .. import APP_NAME, __version__
+from .. import APP_NAME, AUTHOR, DESIGNED_BY, __version__
 from ..catalog import Catalog
+from ..config import AppConfig, load_config
 from ..core import ClientPool, TableResult, TableTarget, format_duration, make_client
 from ..inputs import load_targets, save_targets
 from .browse import BrowseDialog
 from .dialogs import AddTablesDialog
 from .models import TargetModel, TargetView
 from .style import DANGER, MUTED, SUCCESS, WARNING, app_icon
+from .updates import AboutDialog, ForcedUpdateDialog, UpdateChecker
 from .workers import RunOutcome, RunSettings, ScanWorker, Task
 
 LIST_FILTER = "Table lists (*.xlsx *.xlsm *.xls *.csv *.txt);;All files (*)"
@@ -44,7 +46,9 @@ skip tables that are too big.</p>
 <p><b>Browse:</b> search covers every dataset of the project (listings are cached; ↻ refreshes).
 Use several words or <code>*</code> wildcards, e.g. <code>sales *_2024</code>. Ticked tables from
 several projects collect on the right.</p>
-<p>Shortcuts: <b>Ctrl+V</b> pastes table names, <b>Delete</b> removes rows, <b>F5</b> runs.</p>"""
+<p>Shortcuts: <b>Ctrl+V</b> pastes table names, <b>Delete</b> removes rows, <b>F5</b> runs.</p>
+<p>Each run saves an Excel report, a log and a PDF log that record who ran it.</p>
+<p style="color:#6B7280">Designed by {DESIGNED_BY} · Author: {AUTHOR}</p>"""
 
 
 def _card(title: str | None = None) -> tuple[QFrame, QVBoxLayout]:
@@ -68,8 +72,12 @@ def _hint(text: str) -> QLabel:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, client_factory=make_client, settings: QSettings | None = None):
+    def __init__(self, client_factory=make_client, settings: QSettings | None = None,
+                 config: AppConfig | None = None, check_updates: bool = True):
         super().__init__()
+        self.config = config or load_config()
+        self._forced_decision = None
+        self._force_quit = False
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(app_icon())
         self.resize(1280, 820)
@@ -89,10 +97,16 @@ class MainWindow(QMainWindow):
         self._tick.setInterval(1000)
         self._tick.timeout.connect(self._update_elapsed)
 
+        self.updates = UpdateChecker(self.config, self._update_client_factory, self)
+        self.updates.decided.connect(self._on_update_decision)
+        self.updates.failed.connect(lambda msg: self._append_log(f"Update check skipped: {msg}"))
+
         self._build_ui()
         self._load_settings()
         self._update_counts()
         self._set_busy(False)
+        if check_updates:
+            self.updates.start()
 
     # ======================================================================= UI
 
@@ -140,13 +154,26 @@ class MainWindow(QMainWindow):
         texts.addWidget(title)
         texts.addWidget(subtitle)
         row.addLayout(texts, 1)
-        version = QLabel(f"v{__version__}")
-        version.setObjectName("hint")
+        self.update_btn = QPushButton("Update available")
+        self.update_btn.setObjectName("success")
+        self.update_btn.setToolTip("A newer version is available")
+        self.update_btn.hide()
+        self.update_btn.clicked.connect(self.show_about)
         help_btn = QPushButton("How it works")
         help_btn.setObjectName("link")
         help_btn.clicked.connect(lambda: QMessageBox.information(self, "How it works", HELP_TEXT))
+        credits = QLabel(f"Designed by <b>{DESIGNED_BY}</b><br/>Author: <b>{AUTHOR}</b>")
+        credits.setObjectName("credits")
+        credits.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        version = QPushButton(f"v{__version__}")
+        version.setObjectName("link")
+        version.setToolTip("About, credits and updates")
+        version.clicked.connect(self.show_about)
+        row.addWidget(self.update_btn, 0, Qt.AlignVCenter)
         row.addWidget(help_btn, 0, Qt.AlignVCenter)
         row.addWidget(version, 0, Qt.AlignVCenter)
+        row.addSpacing(10)
+        row.addWidget(credits, 0, Qt.AlignVCenter)
         return row
 
     def _build_tables_card(self):
@@ -267,7 +294,9 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.parallel_combo, 1, 1)
         grid.setColumnStretch(1, 1)
         layout.addLayout(grid)
+        self.pdf_check = QCheckBox("Also save the log as PDF")
         self.open_check = QCheckBox("Open the report when finished")
+        layout.addWidget(self.pdf_check)
         layout.addWidget(self.open_check)
         layout.addStretch(1)
 
@@ -356,11 +385,11 @@ class MainWindow(QMainWindow):
         row.addWidget(self.elapsed_label)
         self.report_btn = QPushButton("Open report")
         self.report_btn.setObjectName("success")
+        self.pdf_btn = QPushButton("Open PDF log")
         self.folder_btn = QPushButton("Open folder")
-        self.report_btn.hide()
-        self.folder_btn.hide()
-        row.addWidget(self.report_btn)
-        row.addWidget(self.folder_btn)
+        for b in (self.report_btn, self.pdf_btn, self.folder_btn):
+            b.hide()
+            row.addWidget(b)
         row.addSpacing(12)
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setObjectName("danger")
@@ -373,6 +402,8 @@ class MainWindow(QMainWindow):
 
         self.report_btn.clicked.connect(self._open_report)
         self.folder_btn.clicked.connect(self._open_report_folder)
+        self.pdf_btn.clicked.connect(
+            lambda: self._last_outcome and self._open_path(self._last_outcome.pdf_path))
         self.cancel_btn.clicked.connect(self.cancel_scan)
         self.run_btn.clicked.connect(self.run_scan)
         return card
@@ -391,6 +422,7 @@ class MainWindow(QMainWindow):
         idx = self.parallel_combo.findData(s.value("parallel", 4, type=int))
         self.parallel_combo.setCurrentIndex(idx if idx >= 0 else 2)
         self.open_check.setChecked(s.value("open_when_done", True, type=bool))
+        self.pdf_check.setChecked(s.value("save_pdf", True, type=bool))
         try:
             rows = json.loads(s.value("tables", "[]", type=str) or "[]")
             self.model.add(TableTarget(**r) for r in rows)
@@ -410,6 +442,7 @@ class MainWindow(QMainWindow):
         s.setValue("max_gb", self.limit_spin.value())
         s.setValue("parallel", self.parallel_combo.currentData())
         s.setValue("open_when_done", self.open_check.isChecked())
+        s.setValue("save_pdf", self.pdf_check.isChecked())
         s.setValue("geometry", self.saveGeometry())
         self._save_tables()
         s.sync()
@@ -428,6 +461,8 @@ class MainWindow(QMainWindow):
             max_gb_per_query=self.limit_spin.value(),
             parallel=int(self.parallel_combo.currentData()),
             open_when_done=self.open_check.isChecked(),
+            save_pdf=self.pdf_check.isChecked(),
+            run_log_table=self.config.run_log_table,
         )
 
     def _output_dir(self) -> str:
@@ -609,6 +644,9 @@ class MainWindow(QMainWindow):
     def run_scan(self):
         if self._busy() or not self.model.rowCount():
             return
+        if self._forced_decision is not None:
+            self._show_forced_update()
+            return
         settings = self._run_settings()
         if not self._check_credentials(settings):
             return
@@ -735,7 +773,12 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(0)
         if outcome.report_path and self._run_settings().open_when_done and not outcome.cancelled:
             self._open_path(outcome.report_path)
+        self.pdf_btn.setVisible(bool(outcome.pdf_path))
         QApplication.alert(self, 0)  # flash the taskbar when a long scan ends
+        if self._forced_decision is not None:
+            QTimer.singleShot(0, self._show_forced_update)  # deferred until the scan ended
+        else:
+            self.updates.check()
 
     # ================================================================ results
 
@@ -826,7 +869,7 @@ class MainWindow(QMainWindow):
         for w in (self.browse_btn, self.add_btn, self.import_btn, self.save_list_btn, self.remove_btn,
                   self.clear_btn, self.run_btn, self.adc_radio, self.key_radio,
                   self.billing_edit, self.out_edit, self.out_browse, self.limit_spin, self.parallel_combo,
-                  self.open_check):
+                  self.open_check, self.pdf_check):
             w.setEnabled(not busy)
         self.cancel_btn.setEnabled(busy)
         self.cancel_btn.setVisible(busy)
@@ -849,6 +892,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(text)
         self.report_btn.setVisible(has_report)
         self.folder_btn.setVisible(has_report)
+        self.pdf_btn.setVisible(has_report and bool(self._last_outcome and self._last_outcome.pdf_path))
         if has_report and self._last_outcome:
             self.report_btn.setToolTip(self._last_outcome.report_path)
 
@@ -877,8 +921,39 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, APP_NAME, f"Not found yet:\n{path}")
 
+    # ================================================================ updates
+
+    def _update_client_factory(self):
+        settings = self._run_settings()  # read widgets here, on the UI thread
+        key = settings.key_for()
+        return lambda project: self.pool.get(project, key)
+
+    def _on_update_decision(self, decision):
+        if decision.kind == "forced":
+            self._forced_decision = decision
+            if not self._busy():
+                self._show_forced_update()
+            else:
+                self._append_log(f"Version {decision.latest.version} is required; "
+                                 "the app will close when this scan ends.")
+        elif decision.kind == "optional":
+            self.update_btn.setText(f"Update to {decision.latest.version}")
+            self.update_btn.show()
+        else:
+            self.update_btn.hide()
+
+    def _show_forced_update(self):
+        dialog = ForcedUpdateDialog(self._forced_decision, self.config, self)
+        dialog.exec()
+        self._force_quit = True
+        self.close()
+        QApplication.quit()
+
+    def show_about(self):
+        AboutDialog(self.config, self.updates, self).exec()
+
     def closeEvent(self, event):
-        if self.worker is not None:
+        if self.worker is not None and not self._force_quit:
             answer = QMessageBox.question(self, APP_NAME, "A scan is still running. Stop it and quit?")
             if answer != QMessageBox.Yes:
                 event.ignore()

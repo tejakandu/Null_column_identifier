@@ -62,7 +62,19 @@ the tables you've **selected**.
 | *one sheet per table* | Every column with its type, non-null row count, % filled, and result. Empty columns are highlighted. |
 | **Run Info** | Who ran it, when, how long it took, totals and the definition used. |
 
-A `.log` file of the run is saved next to the report.
+Next to it go a `.log` file and a **PDF log**. Both start with the credits and record
+**who ran it**:
+
+- the Windows name, login and computer
+- the Google account BigQuery saw (`SESSION_USER()`, which is free)
+- the sign-in method and a run ID
+
+The PDF also has a run summary, a results table, the null columns and the full log. Every
+page has the credits and page numbers in the footer.
+
+*Designed by Teja Kandukuri · Author: Balasudharam Murugesan*. These credits appear in the
+app header, the About window (click the version number), the logs and the Excel *Run Info*
+sheet.
 
 ## How "null" is decided
 
@@ -79,6 +91,80 @@ tables run in parallel. That costs the
 same as `SELECT *` on the table. Very wide tables are split into batches of 400 columns. If
 BigQuery rejects a batch, it is split in half until the problem column is found. That column
 is reported as *Not checked* and the rest of the table still gets scanned.
+
+## Run tracking and forced updates (admin)
+
+Both features use two small BigQuery tables in a project you choose. Both are off until they
+are set up.
+
+**1. Create the tables (once):**
+
+```bash
+pip install -r requirements.txt
+gcloud auth application-default login
+python -m nci.admin setup --dataset my-admin-project.null_column_identifier
+```
+
+This creates `run_log` (partitioned by day) and `app_releases`, and writes their names into
+`nci/nci_config.json`. Build the app after this, so the names are bundled into it. To see
+the table definitions first, run `python -m nci.admin sql --dataset …`.
+
+**2. Grant access**, ideally to a Google group of app users, on the dataset:
+
+- `roles/bigquery.dataEditor` on `run_log`, so the app can record runs.
+- `roles/bigquery.dataViewer` on `app_releases`, so the app can read releases.
+
+Users don't need permission to run jobs in that project. Runs are written with the
+streaming API, and releases are read with a row listing; neither starts a query.
+
+**3. Publish a release** after sharing the new build:
+
+```bash
+python -m nci.admin release 2.3.0 --url "https://intranet/NullColumnIdentifier-2.3.0.zip" \
+    --notes "Faster browse" --mandatory
+python -m nci.admin list            # what's published
+python -m nci.admin withdraw 2.3.0  # pull a bad release
+```
+
+The app checks at start-up and every hour (`update_check_minutes`):
+
+- **Mandatory newer release:** a prompt shows the version, the release notes and a
+  **Download** button. It can't be dismissed, and the app closes after it. If a scan is
+  running, the prompt waits until the scan ends and its report is saved.
+- **Optional newer release:** an "Update to x.y" button appears in the header. Nothing is
+  forced.
+- **Check can't run** (offline, no access, not signed in): the app keeps working. It fails
+  open on purpose, so a mistake in the release table never locks everyone out.
+
+The settings live in `nci_config.json`, which is bundled into the app. An admin can put a copy
+next to the `.exe` to change a value without rebuilding. Blank values there are ignored, so
+an empty file can't switch the features off. Like any check that runs on the user's own
+computer, it stops casual use of old versions, not a determined user.
+
+**Analytics:** one row per run, with the tables nested inside it:
+
+```sql
+-- Runs per person per week
+SELECT DATE_TRUNC(DATE(started_at), WEEK) AS week, COALESCE(run_by_name, run_by_login) AS person,
+       COUNT(*) AS runs, SUM(tables_scanned) AS tables, SUM(null_columns_found) AS null_columns
+FROM `my-admin-project.null_column_identifier.run_log`
+GROUP BY week, person ORDER BY week DESC, runs DESC;
+
+-- Versions still in use (last 30 days)
+SELECT app_version, COUNT(DISTINCT run_by_login) AS users, MAX(started_at) AS last_seen
+FROM `my-admin-project.null_column_identifier.run_log`
+WHERE started_at > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+GROUP BY app_version ORDER BY app_version DESC;
+
+-- Tables with the most empty columns
+SELECT t.project, t.dataset, t.table, MAX(t.null_columns) AS null_columns, MAX(t.total_columns) AS columns
+FROM `my-admin-project.null_column_identifier.run_log`, UNNEST(tables) AS t
+WHERE t.status = 'ok'
+GROUP BY 1, 2, 3 ORDER BY null_columns DESC LIMIT 50;
+```
+
+If writing a run fails, for example because the user lacks access, the run still completes
+and the log notes "Run tracking skipped".
 
 ## Running from source
 
@@ -104,6 +190,12 @@ app.py                 entry point
 nci/core.py            schema flattening, SQL, scanning (no UI code)
 nci/report.py          Excel report
 nci/catalog.py         project/dataset/table listings with disk cache
+nci/identity.py        who ran it (Windows name, computer, Google account)
+nci/tracking.py        run-tracking row and BigQuery schema
+nci/releases.py        versions, release table, update decision
+nci/config.py          admin settings (nci_config.json)
+nci/admin.py           admin tool: setup, release, withdraw, list, sql
+nci/gui/pdflog.py      PDF log
 nci/inputs.py          import/export of table lists
 nci/gui/               PySide6 desktop interface
 tests/                 tests, with a fake BigQuery client
