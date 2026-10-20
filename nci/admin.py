@@ -56,7 +56,7 @@ def _client(project: str, key: str):
 
 
 def cmd_setup(args) -> int:
-    from google.api_core.exceptions import Conflict, NotFound
+    from google.api_core.exceptions import Conflict
     from google.cloud import bigquery
 
     project, dataset_id = _split_dataset(args.dataset)
