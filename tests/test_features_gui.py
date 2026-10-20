@@ -99,13 +99,16 @@ def test_scan_writes_credits_identity_pdf_and_tracking(app, tmp_path):
     assert info["Google account"] == "jane@acme.com" and info["Run ID"] == out.run_id
     assert info["Executed by"]
 
-    # BigQuery run tracking: one row with this run id.
+    # BigQuery run tracking: one row per table, all with this run id.
     assert out.tracked
     (table, rows), = client.inserted
     assert table == "admin.nci.run_log"
-    row = rows[0]
-    assert row["run_id"] == out.run_id and row["google_account"] == "jane@acme.com"
-    assert row["status"] == "completed" and row["tables_scanned"] == 2 and row["null_columns_found"] == 5
+    assert sorted(r["table"] for r in rows) == ["clean", "orders"]
+    assert all(r["run_id"] == out.run_id and r["google_account"] == "jane@acme.com" for r in rows)
+    orders = next(r for r in rows if r["table"] == "orders")
+    assert (orders["status"], orders["null_columns"], orders["coverage"]) == ("Scanned", 5, 50.0)
+    assert orders["execution_user"] == info["Executed by"]
+    assert "Run recorded for usage tracking (2 table row(s))" in log
     assert w.pdf_btn.isVisible() and w.report_btn.isVisible()
     w.close()
 

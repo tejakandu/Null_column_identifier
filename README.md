@@ -105,7 +105,7 @@ gcloud auth application-default login
 python -m nci.admin setup --dataset my-admin-project.null_column_identifier
 ```
 
-This creates `run_log` (partitioned by day) and `app_releases`, and writes their names into
+This creates `run_log` and `app_releases`, and writes their names into
 `nci/nci_config.json`. Build the app after this, so the names are bundled into it. To see
 the table definitions first, run `python -m nci.admin sql --dataset …`.
 
@@ -141,26 +141,44 @@ next to the `.exe` to change a value without rebuilding. Blank values there are 
 an empty file can't switch the features off. Like any check that runs on the user's own
 computer, it stops casual use of old versions, not a determined user.
 
-**Analytics:** one row per run, with the tables nested inside it:
+**Run log columns:** one row per table per run, the same figures as the Excel *Overview*
+sheet:
+
+| Column | Meaning |
+|---|---|
+| `run_id` | Id of the run; shared by every table scanned together |
+| `execution_time` | When the run started (UTC) |
+| `execution_user` | Who ran it, e.g. `Jane Doe (jdoe) on LAPTOP-42` |
+| `project`, `dataset`, `table` | The scanned table |
+| `status` | `Scanned`, `Failed` or `Cancelled` |
+| `total_rows`, `total_columns` | Size of the table; nested fields count as columns |
+| `null_columns`, `columns_with_data` | Columns with no value in any row / with at least one |
+| `coverage`, `not_covered` | Percent of columns with data / null (0–100) |
+| `message` | Error or note, e.g. why a table failed |
+| `google_account` | Google account BigQuery saw (extra) |
+| `app_version` | App version that ran it (extra; shows who still runs old versions) |
+
+The table is partitioned by day on `execution_time` and clustered by project, dataset and
+table, so the usual filters stay cheap.
 
 ```sql
+-- Latest result for every table
+SELECT * EXCEPT(rn) FROM (
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY project, dataset, `table` ORDER BY execution_time DESC) AS rn
+  FROM `my-admin-project.null_column_identifier.run_log` WHERE status = 'Scanned')
+WHERE rn = 1 ORDER BY null_columns DESC;
+
 -- Runs per person per week
-SELECT DATE_TRUNC(DATE(started_at), WEEK) AS week, COALESCE(run_by_name, run_by_login) AS person,
-       COUNT(*) AS runs, SUM(tables_scanned) AS tables, SUM(null_columns_found) AS null_columns
+SELECT DATE_TRUNC(DATE(execution_time), WEEK) AS week, execution_user,
+       COUNT(DISTINCT run_id) AS runs, COUNT(*) AS tables, SUM(null_columns) AS null_columns
 FROM `my-admin-project.null_column_identifier.run_log`
-GROUP BY week, person ORDER BY week DESC, runs DESC;
+GROUP BY week, execution_user ORDER BY week DESC, runs DESC;
 
 -- Versions still in use (last 30 days)
-SELECT app_version, COUNT(DISTINCT run_by_login) AS users, MAX(started_at) AS last_seen
+SELECT app_version, COUNT(DISTINCT execution_user) AS users, MAX(execution_time) AS last_seen
 FROM `my-admin-project.null_column_identifier.run_log`
-WHERE started_at > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+WHERE execution_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
 GROUP BY app_version ORDER BY app_version DESC;
-
--- Tables with the most empty columns
-SELECT t.project, t.dataset, t.table, MAX(t.null_columns) AS null_columns, MAX(t.total_columns) AS columns
-FROM `my-admin-project.null_column_identifier.run_log`, UNNEST(tables) AS t
-WHERE t.status = 'ok'
-GROUP BY 1, 2, 3 ORDER BY null_columns DESC LIMIT 50;
 ```
 
 If writing a run fails, for example because the user lacks access, the run still completes
@@ -191,7 +209,7 @@ nci/core.py            schema flattening, SQL, scanning (no UI code)
 nci/report.py          Excel report
 nci/catalog.py         project/dataset/table listings with disk cache
 nci/identity.py        who ran it (Windows name, computer, Google account)
-nci/tracking.py        run-tracking row and BigQuery schema
+nci/tracking.py        run-tracking rows (one per table) and BigQuery schema
 nci/releases.py        versions, release table, update decision
 nci/config.py          admin settings (nci_config.json)
 nci/admin.py           admin tool: setup, release, withdraw, list, sql

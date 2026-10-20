@@ -16,7 +16,7 @@ from .. import APP_NAME, CREDITS, __version__
 from ..core import ClientPool, Scanner, TableResult, TableTarget, format_bytes, format_duration, friendly_error
 from ..identity import google_account, local_identity
 from ..report import RunInfo, write_report
-from ..tracking import build_row, record_run
+from ..tracking import build_rows, record_run
 
 
 @dataclass
@@ -224,14 +224,14 @@ class ScanWorker(QObject):
         if table.count(".") != 2:
             return False
         try:
-            row = build_row(run_id=outcome.run_id, results=outcome.results, identity=info.identity,
-                            started=info.started, finished=info.finished, cancelled=outcome.cancelled,
-                            report_saved=bool(outcome.report_path), query_project=info.query_project,
-                            parallel=info.parallel, safety_limit_gb=info.safety_limit_gb)
+            rows = build_rows(run_id=outcome.run_id, results=outcome.results, identity=info.identity,
+                              started=info.started)
+            if not rows:
+                return False
             client = self.pool.get(table.split(".")[0], self.settings.key_for())
-            record_run(client, table, row)
+            record_run(client, table, rows)
         except Exception as exc:  # noqa: BLE001
             self._log(f"Run tracking skipped: {friendly_error(exc)}")
             return False
-        self._log("Run recorded for usage tracking")
+        self._log(f"Run recorded for usage tracking ({len(rows)} table row(s))")
         return True

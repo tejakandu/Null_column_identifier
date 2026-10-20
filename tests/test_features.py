@@ -1,7 +1,7 @@
 """Credits, who-ran-it, run tracking, releases/forced updates, admin tool, config."""
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -11,7 +11,7 @@ from nci import admin, config
 from nci.core import Scanner, TableTarget
 from nci.identity import RunIdentity, google_account, local_identity
 from nci.releases import Release, decide, fetch_releases, parse_version
-from nci.tracking import RUN_LOG_SCHEMA, build_row, record_run, run_status
+from nci.tracking import RUN_LOG_SCHEMA, build_rows, record_run
 from tests.fakes import FakeClient
 from tests.test_core import ROWS, SCHEMA
 
@@ -56,59 +56,82 @@ def test_local_identity_and_session_user():
 
 # --------------------------------------------------------------------------- tracking
 
+COLUMNS = ["run_id", "execution_time", "execution_user", "project", "dataset", "table", "status",
+           "total_rows", "total_columns", "null_columns", "columns_with_data", "coverage",
+           "not_covered", "message", "google_account", "app_version"]
 
-def _schema_names(spec):
-    return {name: (_schema_names(sub[0]) if sub else None) for name, _t, _m, _d, *sub in spec}
+
+def test_schema_has_the_requested_columns_in_order():
+    assert [c[0] for c in RUN_LOG_SCHEMA] == COLUMNS
 
 
-def test_run_row_matches_schema_and_is_json():
+def test_rows_one_per_table_match_schema():
     started = datetime(2026, 10, 20, 9, 0, 0)
-    row = build_row(run_id="r1", results=_results(), identity=IDENT, started=started,
-                    finished=started + timedelta(seconds=75), cancelled=False, report_saved=True,
-                    query_project="billing", parallel=4, safety_limit_gb=50)
-    names = _schema_names(RUN_LOG_SCHEMA)
-    assert set(row) == set(names)
-    assert set(row["tables"][0]) == set(names["tables"])
-    json.dumps(row)  # streaming insert sends JSON
-    assert row["app_version"] == __version__
-    assert row["status"] == "completed_with_errors"
-    assert row["run_by_name"] == "Jane Doe" and row["google_account"] == "jane@acme.com"
-    assert row["tables_requested"] == 3 and row["tables_scanned"] == 2 and row["tables_failed"] == 1
-    assert row["null_columns_found"] == 5 and row["columns_checked"] == 11
-    assert row["duration_seconds"] == 75
-    assert datetime.fromisoformat(row["started_at"]).tzinfo is not None  # UTC, not naive
-    t = {x["table"]: x for x in row["tables"]}
-    assert t["orders"]["null_columns"] == 5 and t["clean"]["coverage"] == 1.0
-    assert t["missing"]["status"] == "error" and t["missing"]["error"].startswith("Not found")
+    rows = build_rows(run_id="r1", results=_results(), identity=IDENT, started=started)
+    assert len(rows) == 3
+    json.dumps(rows)  # streaming insert sends JSON
+    by_table = {r["table"]: r for r in rows}
+    for r in rows:
+        assert list(r) == COLUMNS
+        assert r["run_id"] == "r1" and r["app_version"] == __version__
+        assert r["execution_user"] == "Jane Doe (jdoe) on LAPTOP-42"
+        assert r["google_account"] == "jane@acme.com"
+        assert datetime.fromisoformat(r["execution_time"]).tzinfo is not None  # UTC, not naive
+        for name, _t, mode, _d in RUN_LOG_SCHEMA:
+            if mode == "REQUIRED":
+                assert r[name] is not None, name
+
+    o = by_table["orders"]
+    assert (o["project"], o["dataset"], o["status"]) == ("p", "d", "Scanned")
+    assert (o["total_rows"], o["total_columns"], o["null_columns"], o["columns_with_data"]) == (2, 10, 5, 5)
+    assert (o["coverage"], o["not_covered"]) == (50.0, 50.0)
+    assert o["message"] is None
+    c = by_table["clean"]
+    assert (c["coverage"], c["not_covered"], c["null_columns"]) == (100.0, 0.0, 0)
+    m = by_table["missing"]
+    assert m["status"] == "Failed" and m["message"].startswith("Not found")
+    assert m["total_rows"] is None and m["coverage"] is None
 
 
-def test_required_fields_never_null():
-    row = build_row(run_id="r", results=[], identity=RunIdentity(), started=datetime.now(),
-                    finished=None, cancelled=True, report_saved=False)
-    for name, _t, mode, _d, *_ in RUN_LOG_SCHEMA:
-        if mode == "REQUIRED":
-            assert row[name] is not None, name
-    assert row["status"] == "cancelled"
+def test_rows_agree_with_excel_overview(tmp_path):
+    from openpyxl import load_workbook
+
+    from nci.report import RunInfo, write_report
+
+    results = _results()
+    write_report(str(tmp_path / "r.xlsx"), results, RunInfo())
+    sheet = list(load_workbook(tmp_path / "r.xlsx")["Overview"].iter_rows(values_only=True))
+    head, body = sheet[0], sheet[1:]
+    rows = build_rows(run_id="r", results=results, identity=IDENT, started=datetime.now())
+    for excel, row in zip(body, rows):
+        e = dict(zip(head, excel))
+        assert (e["Project"], e["Dataset"], e["Table"], e["Status"]) == \
+            (row["project"], row["dataset"], row["table"], row["status"])
+        assert e["Total rows"] == row["total_rows"] and e["Null columns"] == row["null_columns"]
+        assert e["Columns with data"] == row["columns_with_data"]
+        if e["Coverage"] is not None:
+            assert round(e["Coverage"] * 100, 2) == row["coverage"]
+        assert (e["Message"] or None) == row["message"]
 
 
-@pytest.mark.parametrize("statuses,cancelled,saved,expected", [
-    (["ok", "ok"], False, True, "completed"),
-    (["ok", "error"], False, True, "completed_with_errors"),
-    (["error", "error"], False, True, "failed"),
-    (["ok"], False, False, "failed"),
-    (["ok"], True, True, "cancelled"),
-])
-def test_run_status(statuses, cancelled, saved, expected):
-    results = [SimpleNamespace(status=s) for s in statuses]
-    assert run_status(results, cancelled, saved) == expected
+def test_cancelled_and_unknown_user():
+    from nci.core import TableResult
+
+    rows = build_rows(run_id="r", identity=RunIdentity(), started=datetime.now(),
+                      results=[TableResult(TableTarget("p", "d", "t"), status="cancelled",
+                                           error="Cancelled before it started")])
+    assert rows[0]["status"] == "Cancelled" and rows[0]["execution_user"] is None
+    assert rows[0]["message"] == "Cancelled before it started"
 
 
-def test_record_run_inserts_and_dedupes_by_run_id():
+def test_record_run_batches_and_dedupes():
     client = FakeClient({})
-    record_run(client, "a.b.run_log", {"run_id": "abc"})
-    assert client.inserted == [("a.b.run_log", [{"run_id": "abc"}])]
+    rows = [{"run_id": "abc", "n": i} for i in range(1203)]
+    record_run(client, "a.b.run_log", rows)
+    assert [len(b) for _t, b in client.inserted] == [500, 500, 203]
+    assert sum((b for _t, b in client.inserted), []) == rows
     with pytest.raises(RuntimeError, match="rejected"):
-        record_run(FakeClient({}, insert_error="no such field"), "a.b.c", {"run_id": "x"})
+        record_run(FakeClient({}, insert_error="no such field"), "a.b.c", [{"run_id": "x"}])
 
 
 # --------------------------------------------------------------------------- releases
@@ -198,8 +221,8 @@ def test_ddl_is_valid_bigquery_sql():
     sql = admin.ddl("admin-proj.nci")
     statements = [s for s in sqlglot.parse(sql, read="bigquery") if s is not None]
     assert len(statements) == 2
-    assert "PARTITION BY DATE(started_at)" in sql
-    assert "`tables` ARRAY<STRUCT<" in sql
+    assert "PARTITION BY DATE(execution_time)" in sql
+    assert "CLUSTER BY project, dataset, `table`" in sql
 
 
 class AdminClient(FakeClient):

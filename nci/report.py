@@ -99,25 +99,41 @@ def write_report(path: str, results: list[TableResult], info: RunInfo) -> str:
 # --------------------------------------------------------------------------- sheets
 
 
+def table_summary(res: TableResult) -> dict:
+    """Per-table figures shown in the Overview sheet and stored in run tracking."""
+    scanned = res.status == "ok"
+    msg = res.error
+    if scanned and res.error_columns:
+        msg = f"{len(res.error_columns)} column(s) could not be checked"
+    if scanned and res.total_rows == 0:
+        msg = "Table has no rows, so every column is empty"
+    return {
+        "project": res.target.project,
+        "dataset": res.target.dataset,
+        "table": res.target.table,
+        "status": _status_text(res),
+        "total_rows": res.total_rows,
+        "total_columns": len(res.columns) or None,
+        "null_columns": len(res.null_columns) if scanned else None,
+        "columns_with_data": len(res.data_columns) if scanned else None,
+        "coverage": res.coverage,                                   # 0..1
+        "not_covered": (1 - res.coverage) if res.coverage is not None else None,
+        "message": msg or "",
+    }
+
+
 def _write_overview(ws, results, detail_names):
     headers = ["Project", "Dataset", "Table", "Status", "Total rows", "Total columns",
                "Null columns", "Columns with data", "Coverage", "Not covered",
                "Data scanned", "Details", "Null column names", "Message"]
     ws.append(headers)
     for res in results:
-        cov = res.coverage
-        msg = res.error
-        if res.status == "ok" and res.error_columns:
-            msg = f"{len(res.error_columns)} column(s) could not be checked"
-        if res.status == "ok" and res.total_rows == 0:
-            msg = "Table has no rows, so every column is empty"
+        t = table_summary(res)
         ws.append([
-            res.target.project, res.target.dataset, res.target.table, _status_text(res),
-            res.total_rows, len(res.columns) or None, len(res.null_columns) if res.status == "ok" else None,
-            len(res.data_columns) if res.status == "ok" else None,
-            cov, (1 - cov) if cov is not None else None,
+            t["project"], t["dataset"], t["table"], t["status"], t["total_rows"], t["total_columns"],
+            t["null_columns"], t["columns_with_data"], t["coverage"], t["not_covered"],
             format_bytes(res.bytes_processed) if res.bytes_processed else "",
-            "Open", ", ".join(c.name for c in res.null_columns), msg,
+            "Open", ", ".join(c.name for c in res.null_columns), t["message"],
         ])
         r = ws.max_row
         _link(ws.cell(r, 12), detail_names[id(res)])

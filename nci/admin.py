@@ -47,7 +47,7 @@ def ddl(dataset: str) -> str:
         return ",\n".join(lines)
 
     return (f"CREATE TABLE IF NOT EXISTS `{dataset}.{RUN_LOG}` (\n{cols(RUN_LOG_SCHEMA)}\n)\n"
-            f"PARTITION BY DATE(started_at)\nCLUSTER BY app_version, run_by_login;\n\n"
+            f"PARTITION BY DATE(execution_time)\nCLUSTER BY project, dataset, `table`;\n\n"
             f"CREATE TABLE IF NOT EXISTS `{dataset}.{RELEASES}` (\n{cols(RELEASES_SCHEMA)}\n);\n")
 
 
@@ -68,9 +68,9 @@ def cmd_setup(args) -> int:
     print(f"Dataset {project}.{dataset_id} ready")
 
     runs = bigquery.Table(f"{project}.{dataset_id}.{RUN_LOG}", schema=to_bigquery_schema(RUN_LOG_SCHEMA))
-    runs.time_partitioning = bigquery.TimePartitioning(field="started_at")
-    runs.clustering_fields = ["app_version", "run_by_login"]
-    runs.description = "One row per scan run by the Null Column Identifier app"
+    runs.time_partitioning = bigquery.TimePartitioning(field="execution_time")
+    runs.clustering_fields = ["project", "dataset", "table"]
+    runs.description = "Null Column Identifier: one row per table per run"
     rel = bigquery.Table(f"{project}.{dataset_id}.{RELEASES}", schema=to_bigquery_schema(RELEASES_SCHEMA))
     rel.description = "Published versions of the Null Column Identifier app"
     for table in (runs, rel):
